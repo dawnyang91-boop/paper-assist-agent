@@ -612,6 +612,23 @@ class AgentGraph:
     def write_memory(self, state: AgentState) -> None:
         if self.agent.memory_manager is None or not state.answer:
             return
+        if self._sentinel_enabled():
+            try:
+                allowed, decisions = self.agent.security_manager.should_write_memory_interaction(
+                    state.question,
+                    state.answer,
+                )
+                sentinel = state.usage.setdefault("sentinel", self.agent.security_manager.trace_base())
+                sentinel.setdefault("memory_write_decisions", []).extend(decisions)
+                if not allowed:
+                    state.add_warning("sentinel.memory_safety", "本轮问答包含疑似安全策略污染内容，已跳过记忆写入。")
+                    state.writeback_events.append({
+                        "type": "memory_safety",
+                        "result": {"skipped": True, "decisions": decisions},
+                    })
+                    return
+            except Exception as exc:
+                state.add_error("sentinel.memory_write_check", exc)
         try:
             consolidations = self.agent.memory_manager.add_interaction(
                 state.session_id,
@@ -715,6 +732,7 @@ class AgentGraph:
             if item.get("content"):
                 item["content"] = self._trim_text(str(item["content"]), self.config.memory_summary_max_chars)
             compacted.append(item)
+        compacted = self._filter_unsafe_memory_contexts(state, compacted)
         max_items = max(1, self.config.agent_loop_max_memory_items)
         if len(compacted) <= max_items:
             return compacted
@@ -723,6 +741,49 @@ class AgentGraph:
         kept_tool_items = tool_items[-min(len(tool_items), max_items):]
         remaining = max_items - len(kept_tool_items)
         return non_tool_items[:remaining] + kept_tool_items
+
+    def _filter_unsafe_memory_contexts(self, state: AgentState, contexts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not self._sentinel_enabled() or not contexts:
+            return contexts
+        memory_like = []
+        passthrough = []
+        for item in contexts:
+            item_type = str(item.get("type") or item.get("memory_type") or "").lower()
+            role = str(item.get("role") or "").lower()
+            if (
+                item_type in {"working", "episodic", "semantic", "sensory", "memory", "semantic_fact", "working_memory"}
+                or "memory" in role
+                or role in {"working", "episodic", "semantic", "sensory"}
+            ):
+                memory_like.append(item)
+            else:
+                passthrough.append(item)
+        if not memory_like:
+            return contexts
+        try:
+            filtered, decisions = self.agent.security_manager.filter_memory_contexts(memory_like)
+            if decisions:
+                sentinel = state.usage.setdefault("sentinel", self.agent.security_manager.trace_base())
+                sentinel.setdefault("memory_context_decisions", []).extend(decisions)
+                state.add_warning("sentinel.memory_safety", f"已过滤 {len(decisions)} 条疑似污染记忆上下文。")
+            return passthrough + filtered
+        except Exception as exc:
+            state.add_error("sentinel.memory_context_filter", exc)
+            return contexts
+
+    def _sanitize_tool_observation(self, state: AgentState, observation: Dict[str, Any]) -> Dict[str, Any]:
+        if not self._sentinel_enabled():
+            return observation
+        try:
+            sanitized, decision = self.agent.security_manager.sanitize_tool_observation(observation)
+            if decision.findings:
+                sentinel = state.usage.setdefault("sentinel", self.agent.security_manager.trace_base())
+                sentinel.setdefault("tool_output_decisions", []).append(decision.to_dict())
+                state.add_warning("sentinel.tool_output", "MCP 工具输出包含疑似指令注入内容，已净化后再进入上下文。")
+            return sanitized
+        except Exception as exc:
+            state.add_error("sentinel.tool_output_sanitize", exc)
+            return observation
 
     def _fit_context_budget(self, state: AgentState, context_top_k: Optional[int], max_tokens: int):
         built_context = state.built_context
@@ -796,6 +857,7 @@ class AgentGraph:
         for context in contexts:
             observation = dict(context)
             observation.setdefault("type", "mcp")
+            observation = self._sanitize_tool_observation(state, observation)
             state.tool_observations.append(observation)
         state.tool_call_count += len(contexts)
 
@@ -861,12 +923,13 @@ class AgentGraph:
                 sentinel = state.usage.setdefault("sentinel", self.agent.security_manager.trace_base())
                 sentinel.setdefault("tool_decisions", []).append(decision.to_dict())
                 if not decision.allowed:
-                    state.tool_observations.append({
+                    blocked_observation = {
                         "role": "sentinel:tool_policy",
                         "type": "sentinel",
                         "content": f"LLM-Sentinel 已阻止工具调用 {function_name}，策略动作：{decision.action}",
                         "metadata": decision.to_dict(),
-                    })
+                    }
+                    state.tool_observations.append(blocked_observation)
                     continue
             result = self.agent.mcp_manager.call_openai_tool(function_name, arguments)
             state.tool_call_count += 1
@@ -883,6 +946,7 @@ class AgentGraph:
                     "error": result.error,
                 },
             }
+            observation = self._sanitize_tool_observation(state, observation)
             state.tool_observations.append(observation)
 
     def _llm_decide_next_action(self, state: AgentState, include_mcp: bool) -> Optional[LoopDecision]:

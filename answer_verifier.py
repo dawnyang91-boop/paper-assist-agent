@@ -76,6 +76,10 @@ class AnswerVerifier:
         if documents and cited_doc_ids and result.citation_coverage < 0.2:
             result.warnings.append("答案引用覆盖率较低，可能没有充分利用检索文档。")
 
+        consistency_warnings = self._citation_consistency_warnings(answer, documents)
+        if consistency_warnings:
+            result.warnings.extend(consistency_warnings)
+
         if self._signals_insufficient_context(answer):
             result.need_more_info = bool(getattr(query_plan, "need_rag", False))
             result.warnings.append("答案表达了上下文不足，可能需要补充检索或工具调用。")
@@ -101,6 +105,38 @@ class AnswerVerifier:
     def _claims_document_grounding(self, answer: str) -> bool:
         markers = ["根据文档", "根据资料", "从文档", "检索文档显示", "资料显示"]
         return any(marker in answer for marker in markers)
+
+    def _citation_consistency_warnings(self, answer: str, documents: List[Any]) -> List[str]:
+        by_id = {getattr(document, "doc_id", ""): document for document in documents}
+        warnings: List[str] = []
+        cited_ids = sorted(set(f"D{match}" for match in DOCUMENT_CITATION_RE.findall(answer or "")))
+        if not cited_ids:
+            return warnings
+
+        for doc_id in cited_ids:
+            document = by_id.get(doc_id)
+            if document is None:
+                continue
+            snippets = self._sentences_with_citation(answer, doc_id)
+            if not snippets:
+                continue
+            doc_terms = self._terms(getattr(document, "content", ""))
+            if not doc_terms:
+                continue
+            best_overlap = max(
+                (len(self._terms(snippet) & doc_terms) / max(1, len(self._terms(snippet))) for snippet in snippets),
+                default=0.0,
+            )
+            if best_overlap < 0.08:
+                warnings.append(f"引用 {doc_id} 附近表述与对应文档片段词面支撑较弱，请检查引用是否准确。")
+        return warnings
+
+    def _sentences_with_citation(self, answer: str, doc_id: str) -> List[str]:
+        normalized = (answer or "").replace("\n", " ")
+        parts = re.split(r"(?<=[。！？!?；;])\s+|\n+", normalized)
+        if len(parts) <= 1:
+            parts = re.split(r"(?<=[。！？!?；;])", normalized)
+        return [part.strip() for part in parts if f"[{doc_id}]" in part or f"[{doc_id[0]}{doc_id[1:]}]" in part]
 
     def _signals_insufficient_context(self, answer: str) -> bool:
         markers = ["上下文不足", "资料不足", "无法确定", "没有检索到", "无法基于", "未提供足够"]
