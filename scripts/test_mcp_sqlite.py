@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from config import get_config
-from mcp_manager import MCPManager
+from tools.mcp_manager import MCPManager
 
 
 def prepare_demo_db(db_path: Path) -> None:

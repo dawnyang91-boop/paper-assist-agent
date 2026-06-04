@@ -26,7 +26,7 @@
 User / Web UI / CLI
         |
         v
-FastAPI / main.py
+FastAPI (`app/api.py`) / CLI (`app/main.py`)
         |
         v
 QAAgent
@@ -123,16 +123,16 @@ flowchart LR
 
 | 模块 | 文件 / 目录 | 作用 |
 |---|---|---|
-| API 服务 | `api.py` | FastAPI 接口、登录注册、问答、流式问答、上传入库、session 管理 |
-| CLI / 构建入口 | `main.py` | 构建 assistant、入库、单轮问答、交互式对话 |
-| 问答 Agent | `qa_agent.py` | RAG QA 主逻辑，连接检索、重排、记忆、工具、Sentinel |
-| Agent 图 | `agent_graph.py` | 同步 Agent 执行链路，包含输入处理、检索、工具、生成、校验、写回 |
-| 文档转换 | `DocumentConverter.py` | 使用 MarkItDown / PyMuPDF 将多格式文件转为 Markdown |
-| RAG 查询 | `rag_query.py` | Basic / MQE / HyDE 查询生成与 Qdrant 检索 |
-| 上下文构建 | `context_builder.py` | 构建带文档、记忆、工具上下文的最终 prompt |
-| 记忆管理 | `memory_manager.py` | 协调 Working / Episodic / Semantic / Sensory Memory |
-| MCP 工具 | `mcp_manager.py` | 管理 MCP server、工具规划与调用 |
-| Skill 插件 | `skill_manager.py`, `skills/` | 领域知识插件 |
+| API 服务 | `app/api.py` | FastAPI 接口、登录注册、问答、流式问答、上传入库、session 管理 |
+| CLI / 构建入口 | `app/main.py` | 构建 assistant、入库、单轮问答、交互式对话 |
+| 问答 Agent | `agent/qa_agent.py` | RAG QA 主逻辑，连接检索、重排、记忆、工具、Sentinel |
+| Agent 图 | `agent/agent_graph.py` | 同步 Agent 执行链路，包含输入处理、检索、工具、生成、校验、写回 |
+| 文档转换 | `rag/DocumentConverter.py` | 使用 MarkItDown / PyMuPDF 将多格式文件转为 Markdown |
+| RAG 查询 | `rag/rag_query.py` | Basic / MQE / HyDE 查询生成与 Qdrant 检索 |
+| 上下文构建 | `rag/context_builder.py` | 构建带文档、记忆、工具上下文的最终 prompt |
+| 记忆管理 | `memory/memory_manager.py` | 协调 Working / Episodic / Semantic / Sensory Memory |
+| MCP 工具 | `tools/mcp_manager.py` | 管理 MCP server、工具规划与调用 |
+| Skill 插件 | `tools/skill_manager.py`, `skills/` | 领域知识插件 |
 | 安全模块 | `sentinel/` | LLM 安全检测、防护、评测与报告 |
 | Web 前端 | `web/` | 前端聊天与管理界面 |
 | Spring 后端 | `spring-backend/` | 可选 Java 后端上传接口 |
@@ -268,7 +268,7 @@ Neo4j 不可用时，语义图谱增强会被跳过，主流程仍可运行。
 将文档放入 `test_files/` 或自定义目录：
 
 ```bash
-python main.py ingest --data-dir ./test_files
+python -m app.main ingest --data-dir ./test_files
 ```
 
 入库流程：
@@ -296,13 +296,13 @@ python main.py ingest --data-dir ./test_files
 ### 8.1 单轮问答
 
 ```bash
-python main.py ask "请总结 OneTrans 的核心方法" --session-id demo --show-trace
+python -m app.main ask "请总结 OneTrans 的核心方法" --session-id demo --show-trace
 ```
 
 ### 8.2 交互式对话
 
 ```bash
-python main.py chat --session-id demo --show-trace
+python -m app.main chat --session-id demo --show-trace
 ```
 
 交互命令：
@@ -320,7 +320,7 @@ python main.py chat --session-id demo --show-trace
 启动：
 
 ```bash
-uvicorn api:app --host 0.0.0.0 --port 8000
+uvicorn app.api:app --host 0.0.0.0 --port 8000
 ```
 
 健康检查：
@@ -494,7 +494,7 @@ python sentinel/scripts/run_sentinel_eval.py \
 先启动 FastAPI：
 
 ```bash
-uvicorn api:app --host 0.0.0.0 --port 8000
+uvicorn app.api:app --host 0.0.0.0 --port 8000
 ```
 
 再运行评测：
@@ -596,21 +596,44 @@ SENTINEL_OUTPUT_GUARD_ENABLED=true
 
 ```text
 .
-├── api.py                         # FastAPI 服务入口
-├── main.py                        # CLI / assistant 构建 / 入库入口
-├── qa_agent.py                    # RAG QA Agent
-├── agent_graph.py                 # Agent 执行图
-├── rag_query.py                   # RAG 查询生成与向量检索
-├── reranker.py                    # 候选重排
-├── context_builder.py             # 最终上下文构建
-├── DocumentConverter.py           # 文档转换和分块
-├── memory_manager.py              # 多层记忆协调
-├── Working_Memory.py              # 工作记忆
-├── Episodic_Memory.py             # 情景记忆
-├── Semantic_Memory.py             # 语义记忆
-├── Sensory_Memory.py              # 感知记忆
-├── mcp_manager.py                 # MCP 工具管理
-├── skill_manager.py               # Skill 插件管理
+├── app/
+│   ├── api.py                     # FastAPI 服务入口
+│   └── main.py                    # CLI / assistant 构建 / 入库入口
+├── agent/
+│   ├── qa_agent.py                # RAG QA Agent
+│   ├── agent_graph.py             # Agent 执行图
+│   ├── agent_state.py             # Agent 状态对象
+│   ├── answer_verifier.py         # 答案引用与质量校验
+│   ├── checkpoint_store.py        # Agent checkpoint 持久化
+│   └── langgraph_adapter.py       # 可选 LangGraph 适配器
+├── rag/
+│   ├── rag_query.py               # RAG 查询生成与向量检索
+│   ├── reranker.py                # 候选重排
+│   ├── context_builder.py         # 最终上下文构建
+│   ├── DocumentConverter.py       # 文档转换和分块
+│   ├── embedding_service.py       # 文本 embedding 服务
+│   └── qdrant_utils.py            # Qdrant collection / 维度检查工具
+├── memory/
+│   ├── memory_manager.py          # 多层记忆协调
+│   ├── Working_Memory.py          # 工作记忆
+│   ├── Episodic_Memory.py         # 情景记忆
+│   ├── Semantic_Memory.py         # 语义记忆
+│   ├── Sensory_Memory.py          # 感知记忆
+│   ├── importance_scorer.py       # 记忆 importance 打分
+│   ├── content_filters.py         # 污染记忆过滤
+│   └── session_summary.py         # 会话摘要
+├── storage/
+│   ├── transcript_store.py        # 会话记录持久化
+│   ├── upload_store.py            # Web 上传文件管理
+│   ├── background_tasks.py        # 后台任务状态
+│   ├── redis_runtime.py           # Redis 连接运行时
+│   ├── redis_cache.py             # 查询 / LLM 结果缓存
+│   ├── redis_task_queue.py        # Redis 任务队列
+│   ├── redis_working_memory.py    # 工作记忆热存储
+│   └── redis_lock.py              # Redis 分布式锁
+├── tools/
+│   ├── mcp_manager.py             # MCP 工具管理
+│   └── skill_manager.py           # Skill 插件管理
 ├── skills/                        # 本地技能
 ├── sentinel/                      # LLM 安全评测与防护平台
 │   ├── datasets/                  # 安全测试集
@@ -619,6 +642,9 @@ SENTINEL_OUTPUT_GUARD_ENABLED=true
 │   ├── evaluators/                # 评测运行、打分、报告
 │   ├── reports/                   # 评测报告
 │   └── scripts/                   # 测试和评测脚本
+├── deploy/
+│   ├── Dockerfile                 # Python Agent API 镜像
+│   └── docker-compose.yml         # API + Qdrant + Redis + 可选前端
 ├── web/                           # 前端项目
 ├── spring-backend/                # 可选 Spring 后端
 └── requirements.txt
@@ -660,31 +686,31 @@ python -m sentinel.scripts.run_sentinel_eval --target mock --dataset tool_misuse
 
 ```bash
 # 文档入库
-python main.py ingest --data-dir ./test_files
+python -m app.main ingest --data-dir ./test_files
 
 # CLI 单轮问答
-python main.py ask "请总结 OneTrans 的核心贡献"
+python -m app.main ask "请总结 OneTrans 的核心贡献"
 
 # CLI 对话
-python main.py chat --session-id demo
+python -m app.main chat --session-id demo
 
 # 启动 API
-python -m uvicorn api:app --host 0.0.0.0 --port 8000
+python -m uvicorn app.api:app --host 0.0.0.0 --port 8000
 
 # 启动前端
 cd web && npm run dev
 
 # 上传文件后通过 Web UI 点击“开始向量化”
-# 或调用上传/ingest API，详见 api.py
+# 或调用上传/ingest API，详见 app/api.py
 
 # Sentinel mock eval
 python -m sentinel.scripts.run_sentinel_eval --target mock --dataset tool_misuse --output sentinel/reports/tool_misuse_report
 
 # Docker 一键本地启动 API + Qdrant + Redis
-docker compose up --build
+docker compose -f deploy/docker-compose.yml up --build
 
 # 可选启动前端容器
-docker compose --profile frontend up --build
+docker compose -f deploy/docker-compose.yml --profile frontend up --build
 ```
 
 ## 19. 简历项目描述
