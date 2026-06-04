@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
-from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode, urlparse
+from typing import Any, Dict, Iterable, Optional
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 DEFAULT_TIMEOUT_SECONDS = 20
@@ -84,8 +82,7 @@ def normalize_doi(value: Any) -> Optional[str]:
     match = re.search(r"10\.\d{4,9}/\S+", text)
     if not match:
         return None
-    doi = match.group(0).rstrip(".,;)"]}")
-    return doi
+    return match.group(0).rstrip(".,;)]}\"")
 
 
 def http_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = DEFAULT_TIMEOUT_SECONDS) -> Dict[str, Any]:
@@ -138,7 +135,7 @@ def make_pdf_access(
         "pdf_url": pdf_url,
         "source": source,
         "license": license,
-        "checked_sources": list(dict.fromkeys(checked_sources)),
+        "checked_sources": list(dict.fromkeys(source for source in checked_sources if source)),
         "message": message or default_message,
     }
 
