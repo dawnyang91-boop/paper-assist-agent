@@ -9,19 +9,25 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List
 
+from .knowledge_graph_tool import paper_knowledge_graph_tool
 from .pdf_reader_tool import paper_pdf_reader_tool
 from .parser_tool import paper_parser_tool
 from .schemas import (
+    PAPER_KNOWLEDGE_GRAPH_TOOL_SCHEMA,
     PAPER_PARSER_TOOL_SCHEMA,
     PAPER_PDF_READER_TOOL_SCHEMA,
     PAPER_SEARCH_TOOL_SCHEMA,
+    PAPER_SUMMARY_TOOL_SCHEMA,
 )
 from .search_tool import paper_search_tool
+from .summary_tool import paper_summary_tool
 
 PAPER_TOOLS: List[Dict[str, Any]] = [
     {"schema": PAPER_SEARCH_TOOL_SCHEMA, "function": paper_search_tool},
     {"schema": PAPER_PDF_READER_TOOL_SCHEMA, "function": paper_pdf_reader_tool},
     {"schema": PAPER_PARSER_TOOL_SCHEMA, "function": paper_parser_tool},
+    {"schema": PAPER_KNOWLEDGE_GRAPH_TOOL_SCHEMA, "function": paper_knowledge_graph_tool},
+    {"schema": PAPER_SUMMARY_TOOL_SCHEMA, "function": paper_summary_tool},
 ]
 
 
