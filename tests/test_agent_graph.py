@@ -9,12 +9,11 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from config import AppConfig
-from agent_graph import AgentGraph
-from mcp_manager import MCPToolResult
-from qa_agent import QAAgent
-from rag_query import QUERY_MODE_BASIC, QueryGenerator, RAGQueryEngine
-from transcript_store import TranscriptStore
-from transcript_store import TranscriptStore
+from agent.agent_graph import AgentGraph
+from agent.qa_agent import QAAgent
+from rag.rag_query import QUERY_MODE_BASIC, QueryGenerator, RAGQueryEngine
+from storage.transcript_store import TranscriptStore
+from tools.mcp_manager import MCPToolResult
 
 
 class FakeEmbeddingService:

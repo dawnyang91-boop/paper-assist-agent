@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from Episodic_Memory import EpisodicMemory
+from memory.Episodic_Memory import EpisodicMemory
 
 
 @dataclass

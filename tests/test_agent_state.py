@@ -5,7 +5,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from agent_state import AgentState, LoopDecision, QueryPlan
+from agent.agent_state import AgentState, LoopDecision, QueryPlan
 
 
 class AgentStateTest(unittest.TestCase):

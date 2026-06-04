@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from answer_verifier import AnswerVerifier
-from context_builder import ContextDocument
+from agent.answer_verifier import AnswerVerifier
+from rag.context_builder import ContextDocument
 
 
 class AnswerVerifierTest(unittest.TestCase):

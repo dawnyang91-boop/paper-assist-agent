@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from mcp_manager import MCPManager, MCPServerConfig, MCPToolResult
+from tools.mcp_manager import MCPManager, MCPServerConfig, MCPToolResult
 
 
 class FakeMCPClient:

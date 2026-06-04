@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 try:
     from fastapi.testclient import TestClient
-    import api
+    import app.api as api
 except Exception:  # pragma: no cover
     TestClient = None
     api = None

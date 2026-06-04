@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from Working_Memory import WorkingMemory
-from memory_manager import MemoryManager
+from memory.Working_Memory import WorkingMemory
+from memory.memory_manager import MemoryManager
 
 
 class FakeEmbeddingService:

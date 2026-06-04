@@ -8,7 +8,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 try:
-    import api
+    import app.api as api
 except Exception:  # pragma: no cover
     api = None
 

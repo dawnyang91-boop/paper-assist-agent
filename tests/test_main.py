@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-from context_builder import ContextDocument
-from main import format_agent_trace, format_reference_sources
+from app.main import format_agent_trace, format_reference_sources
+from rag.context_builder import ContextDocument
 
 
 def test_format_reference_sources_lists_document_metadata():

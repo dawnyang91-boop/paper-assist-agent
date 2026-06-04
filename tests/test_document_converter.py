@@ -1,6 +1,6 @@
 import pytest
 
-from DocumentConverter import _embed_with_retry
+from rag.DocumentConverter import _embed_with_retry
 
 
 class FakeEmbeddingResponse:

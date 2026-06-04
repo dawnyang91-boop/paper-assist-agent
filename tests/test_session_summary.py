@@ -5,7 +5,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from session_summary import SessionSummaryBuilder
+from memory.session_summary import SessionSummaryBuilder
 
 
 class SessionSummaryBuilderTest(unittest.TestCase):

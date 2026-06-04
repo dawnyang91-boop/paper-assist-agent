@@ -5,10 +5,10 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from context_builder import ContextBuilder
+from rag.context_builder import ContextBuilder
 from config import AppConfig
-from rag_query import RetrievedChunk
-from reranker import CandidateReranker, lexical_overlap, topic_overlap
+from rag.rag_query import RetrievedChunk
+from rag.reranker import CandidateReranker, lexical_overlap, topic_overlap
 
 
 def make_chunk(content, score=0.5, mode="basic", content_hash=None, chunk_index=1, source_hits=None):

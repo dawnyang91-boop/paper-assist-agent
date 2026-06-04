@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from Sensory_Memory import SensoryMemory
+from memory.Sensory_Memory import SensoryMemory
 from config import AppConfig
 
 

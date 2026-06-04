@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from importance_scorer import (
+from memory.importance_scorer import (
     build_importance_prompt,
     clamp_importance,
     rule_based_importance,

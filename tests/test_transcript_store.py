@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from transcript_store import TranscriptStore
+from storage.transcript_store import TranscriptStore
 
 
 class TranscriptStoreTest(unittest.TestCase):

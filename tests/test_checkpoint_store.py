@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from checkpoint_store import SQLiteCheckpointStore
+from agent.checkpoint_store import SQLiteCheckpointStore
 
 
 class SQLiteCheckpointStoreTest(unittest.TestCase):

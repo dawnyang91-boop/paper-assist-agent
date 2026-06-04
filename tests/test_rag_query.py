@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from rag_query import (
+from rag.rag_query import (
     QUERY_MODE_BASIC,
     QUERY_MODE_HYDE,
     QUERY_MODE_MQE,

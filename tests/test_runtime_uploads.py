@@ -8,11 +8,11 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from background_tasks import LocalTaskStore
 from config import AppConfig
-from qdrant_utils import QdrantVectorDimensionError, ensure_collection_vector_size
-from redis_cache import RedisJsonCache
-from upload_store import UploadStore
+from rag.qdrant_utils import QdrantVectorDimensionError, ensure_collection_vector_size
+from storage.background_tasks import LocalTaskStore
+from storage.redis_cache import RedisJsonCache
+from storage.upload_store import UploadStore
 
 
 class RuntimeUploadTest(unittest.TestCase):

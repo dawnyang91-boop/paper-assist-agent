@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from Semantic_Memory import SemanticMemory
+from memory.Semantic_Memory import SemanticMemory
 
 
 @dataclass

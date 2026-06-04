@@ -5,7 +5,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from Working_Memory import WorkingMemory
+from memory.Working_Memory import WorkingMemory
 
 
 class WorkingMemoryTest(unittest.TestCase):

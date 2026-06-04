@@ -26,16 +26,11 @@ jobs:
 
       - name: Compile core modules
         run: |
-          python -m py_compile \
-            api.py qa_agent.py agent_graph.py mcp_manager.py \
-            sentinel/detectors/rule_detector.py \
-            sentinel/defenses/rag_sanitizer.py \
-            sentinel/defenses/tool_policy.py \
-            sentinel/evaluators/scorer.py \
-            sentinel/evaluators/report_writer.py
+          python -m compileall -q \
+            agent app memory rag storage tools skills sentinel
 
       - name: Unit tests
-        run: python -m unittest tests.test_reranker_context tests.test_qa_agent
+        run: python -m pytest tests
 
       - name: Sentinel smoke tests
         run: |

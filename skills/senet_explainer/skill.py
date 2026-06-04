@@ -1,6 +1,6 @@
 from typing import Dict, Optional
 
-from skill_manager import SkillResult
+from tools.skill_manager import SkillResult
 
 
 class SENetExplainerSkill:

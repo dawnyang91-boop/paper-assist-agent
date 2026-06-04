@@ -31,7 +31,7 @@ app = FastAPI(title="私域问答助手 API", version="0.1.0")
 LOGGER = logging.getLogger("chatbot.api")
 if not LOGGER.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-WEB_DIR = Path(__file__).resolve().parent / "web"
+WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 WEB_DIST_DIR = WEB_DIR / "dist"
 WEB_BASE_PATH = "/chatbot"
 RATE_LIMIT_BUCKETS: Dict[str, list[float]] = {}

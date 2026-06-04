@@ -1,5 +1,5 @@
 from config import AppConfig
-from skill_manager import SkillManager
+from tools.skill_manager import SkillManager
 
 
 def test_skill_manager_loads_configured_skill():

@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from langgraph_adapter import LangGraphAgentRunner, LangGraphUnavailable
+from agent.langgraph_adapter import LangGraphAgentRunner, LangGraphUnavailable
 
 
 class LangGraphAdapterTest(unittest.TestCase):

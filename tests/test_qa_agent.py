@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from qa_agent import QAAgent
+from agent.qa_agent import QAAgent
 from config import AppConfig
-from mcp_manager import MCPToolResult
-from rag_query import QUERY_MODE_BASIC, QUERY_MODE_HYDE, QUERY_MODE_MQE
+from rag.rag_query import QUERY_MODE_BASIC, QUERY_MODE_HYDE, QUERY_MODE_MQE
+from tools.mcp_manager import MCPToolResult
 
 
 class FakeEmbeddingService:
@@ -266,7 +266,7 @@ class FakeGeneralKnowledgeLLMClient:
 
 class QAAgentTest(unittest.TestCase):
     def build_agent(self, llm_client=None):
-        from rag_query import QueryGenerator, RAGQueryEngine
+        from rag.rag_query import QueryGenerator, RAGQueryEngine
 
         config = AppConfig(openai_api_key=None, mcp_enabled=False, mcp_tool_calling_enabled=False)
         fake_llm = llm_client or FakeLLMClient()
@@ -418,7 +418,7 @@ class QAAgentTest(unittest.TestCase):
         self.assertIn("Skill 输出", result.built_context.context)
 
     def test_answer_can_use_agentic_mcp_tool_calling(self):
-        from rag_query import QueryGenerator, RAGQueryEngine
+        from rag.rag_query import QueryGenerator, RAGQueryEngine
 
         config = AppConfig(
             openai_api_key="test-key",
@@ -455,7 +455,7 @@ class QAAgentTest(unittest.TestCase):
         self.assertEqual(result.metadata["mcp_context_count"], 0)
 
     def test_answer_fallback_without_llm_client_or_key(self):
-        from rag_query import QueryGenerator, RAGQueryEngine
+        from rag.rag_query import QueryGenerator, RAGQueryEngine
 
         config = AppConfig(openai_api_key=None, openai_base_url=None)
         query_engine = RAGQueryEngine(
@@ -472,7 +472,7 @@ class QAAgentTest(unittest.TestCase):
         self.assertIn("[D1]", result.answer)
 
     def test_general_knowledge_fallback_with_no_documents_still_calls_llm(self):
-        from rag_query import QueryGenerator, RAGQueryEngine
+        from rag.rag_query import QueryGenerator, RAGQueryEngine
 
         config = AppConfig(openai_api_key="test-key", agent_loop_online_fallback_enabled=False)
         llm = FakeGeneralKnowledgeLLMClient()
