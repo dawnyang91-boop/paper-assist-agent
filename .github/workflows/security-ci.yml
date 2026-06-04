@@ -45,7 +45,7 @@ jobs:
             --output sentinel/reports/ci_prompt_injection
 
       - name: Docker build
-        run: docker build -t chatbot-api:ci .
+        run: docker build -t chatbot-api:ci -f deploy/Dockerfile .
 
   web:
     runs-on: ubuntu-latest
@@ -68,4 +68,4 @@ jobs:
         run: npm run build
 
       - name: Docker build web
-        run: docker build -t chatbot-web:ci .
+        run: docker build -t chatbot-web:ci -f Dockerfile .
