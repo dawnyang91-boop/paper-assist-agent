@@ -39,8 +39,10 @@ class RAGSanitizer:
             content = getattr(ranked, "content", "") or ""
             decision = self.sanitize_text(content)
             payload = dict(getattr(getattr(ranked, "chunk", None), "payload", None) or getattr(ranked, "payload", {}) or {})
-            source_trust_score = self.source_trust_score(payload)
-            retrieval_penalty = self.retrieval_penalty(decision.risk_score, source_trust_score)
+            payload_decision, sanitized_payload = self.sanitize_payload_metadata(payload)
+            risk_score = max(decision.risk_score, payload_decision.risk_score)
+            source_trust_score = self.source_trust_score(sanitized_payload)
+            retrieval_penalty = self.retrieval_penalty(risk_score, source_trust_score)
             if decision.findings:
                 decisions.append({
                     "rank": getattr(ranked, "rank", None),
@@ -50,6 +52,16 @@ class RAGSanitizer:
                     "retrieval_penalty": retrieval_penalty,
                     "findings": [finding.to_dict() for finding in decision.findings],
                     "removed_chars": decision.metadata.get("removed_chars", 0),
+                })
+            if payload_decision.findings:
+                decisions.append({
+                    "rank": getattr(ranked, "rank", None),
+                    "action": payload_decision.action,
+                    "risk_score": payload_decision.risk_score,
+                    "source_trust_score": source_trust_score,
+                    "retrieval_penalty": retrieval_penalty,
+                    "metadata_sanitized": True,
+                    "findings": [finding.to_dict() for finding in payload_decision.findings],
                 })
             sanitized_text = decision.sanitized_text
             if sanitized_text is not None and sanitized_text != content:
@@ -62,9 +74,13 @@ class RAGSanitizer:
                     pass
             try:
                 ranked.chunk.payload = dict(ranked.chunk.payload or {})
+                ranked.chunk.payload.update(sanitized_payload)
                 ranked.chunk.payload["source_trust_score"] = source_trust_score
-                ranked.chunk.payload["sentinel_risk_score"] = decision.risk_score
+                ranked.chunk.payload["sentinel_risk_score"] = risk_score
                 ranked.chunk.payload["retrieval_penalty"] = retrieval_penalty
+                if payload_decision.findings:
+                    ranked.chunk.payload["sentinel_metadata_sanitized"] = True
+                    ranked.chunk.payload["sentinel_metadata_findings"] = [finding.to_dict() for finding in payload_decision.findings]
                 ranked.rerank_score = max(0.0, float(getattr(ranked, "rerank_score", 0.0)) * (1.0 - retrieval_penalty))
             except Exception:
                 pass
@@ -92,6 +108,8 @@ class RAGSanitizer:
             item = dict(doc)
             text = str(item.get("content") or item.get("page_content") or "")
             decision = self.sanitize_text(text)
+            payload_decision, sanitized_payload = self.sanitize_payload_metadata(item)
+            item.update(sanitized_payload)
             if decision.sanitized_text is not None:
                 item["content"] = decision.sanitized_text
                 if "page_content" in item:
@@ -100,8 +118,57 @@ class RAGSanitizer:
                 item["sentinel_sanitized"] = True
                 item["sentinel_findings"] = [finding.to_dict() for finding in decision.findings]
                 decisions.append({"index": index, **decision.to_dict()})
+            if payload_decision.findings:
+                item["sentinel_metadata_sanitized"] = True
+                item["sentinel_metadata_findings"] = [finding.to_dict() for finding in payload_decision.findings]
+                decisions.append({"index": index, "metadata": True, **payload_decision.to_dict()})
             sanitized_docs.append(item)
         return sanitized_docs, decisions
+
+    def sanitize_payload_metadata(self, payload: Dict[str, Any]) -> Tuple[SecurityDecision, Dict[str, Any]]:
+        sanitized = dict(payload or {})
+        fields = ("title", "source", "note", "description")
+        all_findings: List[Any] = []
+        for field in fields:
+            if field not in sanitized:
+                continue
+            decision = self.sanitize_text(str(sanitized.get(field) or ""))
+            if decision.sanitized_text is not None:
+                sanitized[field] = decision.sanitized_text
+            all_findings.extend(decision.findings)
+
+        if "heading_paths" in sanitized:
+            headings = sanitized.get("heading_paths") or []
+            if isinstance(headings, list):
+                clean_headings = []
+                for heading in headings:
+                    decision = self.sanitize_text(str(heading))
+                    clean_headings.append(decision.sanitized_text if decision.sanitized_text is not None else str(heading))
+                    all_findings.extend(decision.findings)
+                sanitized["heading_paths"] = clean_headings
+
+        nested_metadata = sanitized.get("metadata")
+        if isinstance(nested_metadata, dict):
+            clean_metadata = {}
+            for key, value in nested_metadata.items():
+                if isinstance(value, (str, int, float, bool)) or value is None:
+                    decision = self.sanitize_text(str(value))
+                    clean_metadata[key] = decision.sanitized_text if decision.sanitized_text is not None else value
+                    all_findings.extend(decision.findings)
+                else:
+                    clean_metadata[key] = value
+            sanitized["metadata"] = clean_metadata
+
+        risk = max((finding.confidence for finding in all_findings), default=0.0)
+        decision = SecurityDecision(
+            allowed=True,
+            action="sanitize" if all_findings else "allow",
+            risk_score=risk,
+            findings=list(all_findings),
+            sanitized_text=None,
+            metadata={"metadata_fields_checked": ["title", "source", "note", "description", "heading_paths", "metadata"]},
+        )
+        return decision, sanitized
 
     def source_trust_score(self, payload: Dict[str, Any]) -> float:
         explicit = payload.get("source_trust_score") or payload.get("trust_score")
@@ -119,8 +186,16 @@ class RAGSanitizer:
         if payload.get("author"):
             score += 0.06
         document_type = str(payload.get("document_type") or payload.get("mime_type") or payload.get("file_type") or "").lower()
+        source_type = str(payload.get("source_type") or "").lower()
+        extension = str(payload.get("document_extension") or payload.get("extension") or "").lower()
         if any(marker in document_type for marker in ("pdf", "markdown", "md", "docx", "text", "local")):
             score += 0.08
+        if source_type in {"local_upload", "user_upload", "curated", "official"}:
+            score += 0.08
+        if extension in {".pdf", ".md", ".markdown", ".docx", ".txt"}:
+            score += 0.05
+        if payload.get("known_trusted_source"):
+            score += 0.12
         if source_file.lower().startswith(("http://", "https://")):
             score -= 0.05
 
@@ -129,6 +204,8 @@ class RAGSanitizer:
         score += recency_bonus
         if payload.get("sentinel_sanitized"):
             score -= 0.12
+        if payload.get("sentinel_findings") or payload.get("sentinel_metadata_findings"):
+            score -= 0.16
         return max(0.1, min(1.0, score))
 
     def retrieval_penalty(self, risk_score: float, source_trust_score: float) -> float:
@@ -171,6 +248,7 @@ class RAGSanitizer:
         return negative in text
 
     def _strip_instruction_lines(self, text: str) -> str:
+        text = self._strip_instruction_blocks(text)
         kept = []
         for line in (text or "").splitlines():
             findings = detect_rules(line, RAG_INSTRUCTION_RULES, max_evidence_chars=self.config.max_evidence_chars)
@@ -182,6 +260,17 @@ class RAGSanitizer:
             kept.append(line)
         sanitized = "\n".join(kept).strip()
         return sanitized or "[该文档片段包含疑似指令注入内容，已被 Sentinel 净化。]"
+
+    def _strip_instruction_blocks(self, text: str) -> str:
+        value = text or ""
+        patterns = [
+            r"---+\s*(?:new instruction|system override|instruction)\s*---+.*?(?=\n\s*\n|\Z)",
+            r"```+\s*(?:system|developer|instruction|assistant).*?```+",
+            r"<(?:system|developer|instruction)>.*?</(?:system|developer|instruction)>",
+        ]
+        for pattern in patterns:
+            value = re.sub(pattern, "", value, flags=re.IGNORECASE | re.DOTALL)
+        return value
 
     def _recency_bonus(self, timestamp: Any) -> float:
         try:

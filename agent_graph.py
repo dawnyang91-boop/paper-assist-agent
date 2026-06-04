@@ -193,6 +193,17 @@ class AgentGraph:
             decision = self.agent.security_manager.pre_check_user_input(clean)
             sentinel = state.usage.setdefault("sentinel", self.agent.security_manager.trace_base())
             sentinel["input_decision"] = decision.to_dict()
+            risk_flags = sorted({finding.risk_type for finding in decision.findings})
+            sentinel["current_risk_flags"] = risk_flags
+            sentinel["previous_risk_flags"] = self._previous_risk_flags(state)
+            sentinel["jailbreak_setup_detected"] = any(
+                flag in {"jailbreak", "delimiter_confusion", "encoded_instruction"}
+                for flag in risk_flags
+            )
+            sentinel["pending_sensitive_intent"] = any(
+                flag in {"data_exfiltration", "authority_claim", "audit_excuse"}
+                for flag in risk_flags
+            )
             if not decision.allowed:
                 state.should_enter_loop = False
                 state.stop_reason = "sentinel_blocked_input"
@@ -215,6 +226,23 @@ class AgentGraph:
             })
         except Exception as exc:
             state.add_warning("process_user_input", f"question normalization failed, using original input: {exc}")
+
+    def _previous_risk_flags(self, state: AgentState) -> List[str]:
+        flags: List[str] = []
+        events = list(getattr(state, "resumed_transcript", []) or [])
+        if not events and getattr(self.transcript_store, "enabled", False):
+            try:
+                events = self.transcript_store.load(state.session_id)[-12:]
+            except Exception:
+                events = []
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            metadata = event.get("metadata") or {}
+            sentinel = metadata.get("sentinel") if isinstance(metadata, dict) else None
+            if isinstance(sentinel, dict):
+                flags.extend(str(item) for item in sentinel.get("current_risk_flags", []) or [])
+        return sorted(set(flags))
 
     def record_transcript(self, state: AgentState, role: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         try:

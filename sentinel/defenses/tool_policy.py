@@ -10,6 +10,15 @@ from sentinel.config import SentinelConfig
 from sentinel.schemas import SecurityDecision, SecurityFinding
 
 
+SENSITIVE_ARGUMENT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"sk-[a-zA-Z0-9_\-]{12,}", flags=re.IGNORECASE),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b", flags=re.IGNORECASE),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\b(?:[A-Z0-9_]*(?:API_KEY|SECRET|TOKEN|PASSWORD|ACCESS_KEY|PRIVATE_KEY|DATABASE_URL)[A-Z0-9_]*)\s*=\s*[^\s#]{8,}"),
+    re.compile(r"\bBearer\s+[A-Za-z0-9_\-./+=]{16,}\b", flags=re.IGNORECASE),
+)
+
+
 @dataclass(frozen=True)
 class ToolPolicy:
     level: str
@@ -150,6 +159,7 @@ class ToolPolicyChecker:
         findings = []
         findings.extend(self._check_args(policy, parsed_args))
         findings.extend(self._check_paths(policy, parsed_args))
+        findings.extend(self._check_sensitive_arguments(parsed_args))
 
         if policy.requires_permission and not self._has_permission(user_context, policy.requires_permission):
             findings.append(self._finding(
@@ -284,6 +294,24 @@ class ToolPolicyChecker:
                         path,
                         "Tool path is outside the registered allowed directories.",
                     ))
+        return findings
+
+    def _check_sensitive_arguments(self, args: Dict[str, Any]) -> list[SecurityFinding]:
+        findings: list[SecurityFinding] = []
+        for key, value in self._flatten_items(args):
+            text = str(value)
+            for pattern in SENSITIVE_ARGUMENT_PATTERNS:
+                match = pattern.search(text)
+                if not match:
+                    continue
+                findings.append(self._finding(
+                    "data_exfiltration",
+                    "critical",
+                    0.95,
+                    f"{key}={match.group(0)[:80]}",
+                    "Tool arguments contain secret-like data and must be redacted before any tool call.",
+                ))
+                return findings
         return findings
 
     def _path_in_allowed_scope(self, raw_path: str, allowed_paths: Iterable[str]) -> bool:

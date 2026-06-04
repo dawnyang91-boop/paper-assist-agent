@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from config import AppConfig, get_config
+from sentinel.defenses.security_manager import SecurityManager
 
 
 @dataclass
@@ -193,10 +194,12 @@ class MCPManager:
         config: Optional[AppConfig] = None,
         servers: Optional[Dict[str, MCPServerConfig]] = None,
         client_cls: Any = StdioMCPClient,
+        security_manager: Any = None,
     ):
         self.config = config or get_config()
         self.servers = servers or build_default_mcp_servers(self.config)
         self.client_cls = client_cls
+        self.security_manager = security_manager or SecurityManager.from_app_config(self.config)
         self._openai_tool_map: Dict[str, Dict[str, str]] = {}
 
     def enabled_servers(self) -> Dict[str, MCPServerConfig]:
@@ -231,7 +234,7 @@ class MCPManager:
         for task in tasks:
             result = await self.call_tool(task["server"], task["tool"], task["arguments"])
             content = result.content if result.success else f"MCP 调用失败：{result.error}"
-            memories.append({
+            observation = {
                 "role": f"mcp:{result.server}.{result.tool}",
                 "type": "mcp",
                 "content": self._truncate(content),
@@ -242,7 +245,15 @@ class MCPManager:
                     "error": result.error,
                     "arguments": task["arguments"],
                 },
-            })
+            }
+            if self.security_manager is not None:
+                try:
+                    observation, decision = self.security_manager.sanitize_tool_observation(observation)
+                    if decision.findings:
+                        observation.setdefault("metadata", {})["tool_output_sanitize_decision"] = decision.to_dict()
+                except Exception:
+                    pass
+            memories.append(observation)
         return memories
 
     def plan_online_search_tool_calls(self, question: str) -> List[Dict[str, Any]]:

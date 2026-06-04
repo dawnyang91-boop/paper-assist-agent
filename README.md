@@ -51,6 +51,74 @@ AgentGraph
 Final Answer + Sources + Trace
 ```
 
+### 2.1 RAG Pipeline
+
+```mermaid
+flowchart LR
+    A[User Query] --> B[Query Understanding]
+    B --> C1[Basic Query]
+    B --> C2[MQE]
+    B --> C3[HyDE]
+    C1 --> D[Embedding]
+    C2 --> D
+    C3 --> D
+    D --> E[Qdrant Search]
+    E --> F[Deduplicate]
+    F --> G[Candidate Reranker]
+    G --> H[LLM-Sentinel RAG Sanitizer]
+    H --> I[Trust / Risk / Retrieval Penalty]
+    I --> J[Context Builder]
+```
+
+### 2.2 AgentGraph
+
+```mermaid
+flowchart TD
+    A[process_user_input] --> B[InputGuard]
+    B --> C[understand_query]
+    C --> D[retrieve_rag]
+    D --> E[retrieve_memory]
+    E --> F[apply_skills]
+    F --> G[assess_local_context]
+    G --> H{need tools?}
+    H -- yes --> I[call_mcp_tools]
+    I --> J[ToolPolicy + ToolOutputSanitizer]
+    H -- no --> K[build_context]
+    J --> K
+    K --> L[generate_answer]
+    L --> M[OutputGuard]
+    M --> N[verify_answer]
+    N --> O[MemorySafetyChecker]
+    O --> P[finalize]
+```
+
+### 2.3 Sentinel Security Pipeline
+
+```mermaid
+flowchart LR
+    A[User Input] --> B[InputGuard]
+    B --> C[RAG Sanitizer]
+    C --> D[ToolPolicyChecker]
+    D --> E[ToolOutputSanitizer]
+    E --> F[Context Builder]
+    F --> G[LLM]
+    G --> H[OutputGuard]
+    H --> I[AnswerVerifier]
+    I --> J[MemorySafetyChecker]
+```
+
+### 2.4 Evaluation Pipeline
+
+```mermaid
+flowchart LR
+    A[Datasets] --> B[Target Adapter]
+    B --> C[SentinelScorer]
+    C --> D[LLM Judge optional]
+    D --> E[ReportWriter]
+    E --> F[JSON Report]
+    E --> G[Markdown Report]
+```
+
 核心模块：
 
 | 模块 | 文件 / 目录 | 作用 |
@@ -558,21 +626,84 @@ SENTINEL_OUTPUT_GUARD_ENABLED=true
 
 ---
 
-## 17. 后续优化方向
+## 17. Sentinel 评测展示
 
-当前项目已经具备可展示的 RAG + Agent + LLM Security MVP。后续建议重点优化：
+可运行以下命令生成安全评测报告：
 
-1. **Sentinel 与 MCP tool calling 的强制接入**：确保所有 tool call 与 tool observation 都经过 ToolPolicyChecker 和 ToolOutputSanitizer。
-2. **结构化 Tool Misuse 评测**：在数据集中加入 `metadata.tool_name`、`tool_args`、`user_context.permissions`，避免只靠自然语言判断工具风险。
-3. **RAG metadata 清洗**：不仅清洗 `content/page_content`，还要清洗 title、source、note、heading_paths、payload metadata。
-4. **事实污染检测**：通过多源一致性、source trust score、文档时间戳、引用一致性来识别错误事实污染。
-5. **Jailbreak 泛化检测**：增强英文软表达、多轮铺垫、翻译绕过、编码拆分等样本和规则。
-6. **安全教育误报抑制**：区分“学习防御知识”和“请求绕过安全策略”。
-7. **ReportWriter 分类统计**：补充 category_scores、attack_type_scores、失败原因聚合。
-8. **CI/CD 与部署**：补充 Dockerfile、docker-compose、GitHub Actions、健康检查、日志与监控。
+```bash
+python -m sentinel.scripts.run_sentinel_eval --target mock --dataset prompt_injection --output sentinel/reports/prompt_injection_report
+python -m sentinel.scripts.run_sentinel_eval --target mock --dataset jailbreak --output sentinel/reports/jailbreak_report
+python -m sentinel.scripts.run_sentinel_eval --target mock --dataset rag_poisoning --output sentinel/reports/rag_poisoning_report
+python -m sentinel.scripts.run_sentinel_eval --target mock --dataset tool_misuse --output sentinel/reports/tool_misuse_report
+```
+
+报告会输出：
+
+| 指标 | 说明 |
+|---|---|
+| `summary.score` | 当前数据集综合安全分 |
+| `category_scores` | 按 Prompt Injection / Jailbreak / RAG Poisoning / Tool Misuse 聚合 |
+| `attack_type_scores` | 按 direct / indirect / role_play / metadata_pollution / external_action 等攻击类型聚合 |
+| `failure_analysis` | 失败攻击类型、假阳性、假阴性、高置信失败 |
+| `comparison` | baseline / with_sentinel / with_sentinel_and_llm_judge 对比指标 |
+
+示例展示表：
+
+| 数据集 | 目标能力 |
+|---|---|
+| Prompt Injection | 拦截忽略系统规则、提示词泄露、伪 system 块 |
+| Jailbreak | 检测角色扮演、软性绕过、多轮铺垫、编码/翻译绕过 |
+| RAG Poisoning | 清洗文档指令污染、metadata 污染、chunk boundary injection，并降低污染 chunk 排名 |
+| Tool Misuse | 结构化评测 MCP 工具调用、权限检查、参数泄露、链式工具攻击 |
+
+## 18. Demo 命令
+
+```bash
+# 文档入库
+python main.py ingest --data-dir ./test_files
+
+# CLI 单轮问答
+python main.py ask "请总结 OneTrans 的核心贡献"
+
+# CLI 对话
+python main.py chat --session-id demo
+
+# 启动 API
+python -m uvicorn api:app --host 0.0.0.0 --port 8000
+
+# 启动前端
+cd web && npm run dev
+
+# 上传文件后通过 Web UI 点击“开始向量化”
+# 或调用上传/ingest API，详见 api.py
+
+# Sentinel mock eval
+python -m sentinel.scripts.run_sentinel_eval --target mock --dataset tool_misuse --output sentinel/reports/tool_misuse_report
+
+# Docker 一键本地启动 API + Qdrant + Redis
+docker compose up --build
+
+# 可选启动前端容器
+docker compose --profile frontend up --build
+```
+
+## 19. 简历项目描述
+
+**Paper Assist Agent / 私域论文问答与 LLM-Sentinel 安全平台**
+
+基于 FastAPI + React + Qdrant + Redis + Neo4j 构建私域论文问答 Agent，支持本地文档上传、Markdown 转换、向量化入库、Basic/MQE/HyDE 多路检索、重排、上下文组装、长期记忆和 MCP 工具调用。设计并实现 LLM-Sentinel 安全中间件，覆盖 Prompt Injection、Jailbreak、RAG Poisoning、Tool Misuse、Memory Injection 与输出泄露检测；通过 ToolPolicyChecker、ToolOutputSanitizer、RAG trust/risk/penalty、MemorySafetyChecker 和 OutputGuard 对 Agent 全链路进行防护。内置结构化安全评测数据集、自动评分器和 Markdown/JSON 报告，支持 CI/CD 中自动运行安全回归测试。
+
+可突出能力：
+
+- RAG + Agent + MCP + Skills 的完整私域问答链路；
+- Working / Episodic / Semantic / Sensory 多层记忆管理；
+- Redis 缓存、任务状态、锁与工作记忆热存储；
+- Qdrant 向量检索与 source trust / retrieval penalty 安全重排；
+- LLM-Sentinel 安全评测平台与自动化报告；
+- Docker Compose 与 GitHub Actions 自动化部署/评测流水线。
 
 ---
 
-## 18. 免责声明
+## 20. 免责声明
 
 本项目中的 LLM-Sentinel 模块用于合法合规的 LLM 安全评测、防护研究和自有系统加固。请勿将测试集或评测能力用于攻击第三方系统、绕过未授权服务或泄露敏感信息。

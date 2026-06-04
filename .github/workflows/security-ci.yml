@@ -1,0 +1,76 @@
+name: Chatbot Security CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  python-sentinel:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compile core modules
+        run: |
+          python -m py_compile \
+            api.py qa_agent.py agent_graph.py mcp_manager.py \
+            sentinel/detectors/rule_detector.py \
+            sentinel/defenses/rag_sanitizer.py \
+            sentinel/defenses/tool_policy.py \
+            sentinel/evaluators/scorer.py \
+            sentinel/evaluators/report_writer.py
+
+      - name: Unit tests
+        run: python -m unittest tests.test_reranker_context tests.test_qa_agent
+
+      - name: Sentinel smoke tests
+        run: |
+          python sentinel/scripts/test_security_manager.py
+          python sentinel/scripts/test_chatbot_integration.py
+
+      - name: Sentinel mock eval
+        run: |
+          python -m sentinel.scripts.run_sentinel_eval \
+            --target mock \
+            --dataset prompt_injection \
+            --output sentinel/reports/ci_prompt_injection
+
+      - name: Docker build
+        run: docker build -t chatbot-api:ci .
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        run: npm ci
+
+      - name: Typecheck and build
+        run: npm run build
+
+      - name: Docker build web
+        run: docker build -t chatbot-web:ci .

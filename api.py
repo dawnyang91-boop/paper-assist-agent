@@ -1,8 +1,10 @@
 import json
 import hashlib
+import logging
 import queue
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -26,6 +28,9 @@ except ImportError as exc:  # pragma: no cover - only triggered when API deps ar
 
 
 app = FastAPI(title="私域问答助手 API", version="0.1.0")
+LOGGER = logging.getLogger("chatbot.api")
+if not LOGGER.handlers:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 WEB_DIR = Path(__file__).resolve().parent / "web"
 WEB_DIST_DIR = WEB_DIR / "dist"
 WEB_BASE_PATH = "/chatbot"
@@ -39,6 +44,29 @@ STATIC_DIR = WEB_DIST_DIR if WEB_DIST_DIR.exists() else WEB_DIR
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.mount(f"{WEB_BASE_PATH}/static", StaticFiles(directory=str(STATIC_DIR)), name="chatbot-static")
+
+
+@app.middleware("http")
+async def request_logging_middleware(request: Request, call_next):
+    request_id = request.headers.get("X-Request-Id") or str(uuid.uuid4())
+    start = time.perf_counter()
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        response.headers["X-Request-Id"] = request_id
+        return response
+    finally:
+        latency_ms = round((time.perf_counter() - start) * 1000, 2)
+        LOGGER.info(
+            "request_id=%s method=%s path=%s status=%s session_id=%s latency_ms=%s",
+            request_id,
+            request.method,
+            request.url.path,
+            status_code,
+            request.query_params.get("session_id", ""),
+            latency_ms,
+        )
 
 
 class AskRequest(BaseModel):

@@ -506,14 +506,42 @@ Original user question:
                 function = getattr(tool_call, "function", None)
                 function_name = getattr(function, "name", "")
                 arguments = getattr(function, "arguments", "{}")
+                if self.security_manager is not None:
+                    decision = self.security_manager.check_tool_call(
+                        function_name,
+                        args=arguments,
+                        user_context={"session_id": getattr(built_context, "session_id", "default"), "permissions": []},
+                    )
+                    if not decision.allowed:
+                        observation = f"LLM-Sentinel 已阻止工具调用 {function_name}，策略动作：{decision.action}"
+                        self._last_mcp_tool_calls.append({
+                            "function": function_name,
+                            "server": "sentinel",
+                            "tool": function_name,
+                            "success": False,
+                            "error": observation,
+                            "sentinel_decision": decision.to_dict(),
+                        })
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": getattr(tool_call, "id", ""),
+                            "content": observation,
+                        })
+                        continue
                 result = self.mcp_manager.call_openai_tool(function_name, arguments)
                 observation = result.content if result.success else f"MCP 工具调用失败：{result.error or result.content}"
+                sanitize_decision = None
+                if self.security_manager is not None:
+                    sanitize_decision = self.security_manager.sanitize_tool_output(observation)
+                    if sanitize_decision.sanitized_text is not None:
+                        observation = sanitize_decision.sanitized_text
                 self._last_mcp_tool_calls.append({
                     "function": function_name,
                     "server": result.server,
                     "tool": result.tool,
                     "success": result.success,
                     "error": result.error,
+                    "sentinel_sanitize_decision": sanitize_decision.to_dict() if sanitize_decision else None,
                 })
                 messages.append({
                     "role": "tool",
