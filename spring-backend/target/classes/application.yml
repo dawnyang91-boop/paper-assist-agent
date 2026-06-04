@@ -1,0 +1,39 @@
+server:
+  port: 8088
+  servlet:
+    session:
+      cookie:
+        name: CHATBOT_SESSION
+        http-only: true
+        same-site: lax
+
+spring:
+  application:
+    name: chatbot-business-backend
+  servlet:
+    multipart:
+      max-file-size: 80MB
+      max-request-size: 160MB
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 3s
+  session:
+    store-type: redis
+    timeout: 7d
+
+chatbot:
+  agent-base-url: ${PYTHON_AGENT_BASE_URL:http://127.0.0.1:8000/chatbot}
+  internal-api-token: ${AGENT_INTERNAL_API_TOKEN:}
+  upload-root: ${CHATBOT_UPLOAD_ROOT:../data/uploads}
+  allowed-extensions: ${RAG_UPLOAD_ALLOWED_EXTENSIONS:.txt,.md,.pdf,.docx,.pptx,.xlsx,.csv,.png,.jpg,.jpeg,.webp}
+  max-file-size-mb: ${RAG_UPLOAD_MAX_FILE_SIZE_MB:80}
+  cors-allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
+  rate-limits:
+    login-per-minute: ${RATE_LOGIN_PER_MINUTE:10}
+    register-per-minute: ${RATE_REGISTER_PER_MINUTE:10}
+    ask-per-minute: ${RATE_ASK_PER_MINUTE:30}
+    upload-per-minute: ${RATE_UPLOAD_PER_MINUTE:20}
+    ingest-per-minute: ${RATE_INGEST_PER_MINUTE:3}

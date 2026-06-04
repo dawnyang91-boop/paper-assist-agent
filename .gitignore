@@ -1,0 +1,27 @@
+# 环境变量文件
+.env
+**/.env
+.env.*
+
+# Markdown 文件
+*.md
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 虚拟环境
+venv/
+.venv/
+
+# Node 依赖
+node_modules/
+
+# 构建产物
+dist/
+build/
+
+# IDE / 系统文件
+.idea/
+.vscode/
+.DS_Store
