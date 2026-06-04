@@ -1,7 +1,7 @@
 # 环境变量文件
 .env
 **/.env
-.env.*
+.env.*git status
 
 # Markdown 文件
 *.md
@@ -25,3 +25,5 @@ build/
 .idea/
 .vscode/
 .DS_Store
+
+*.db
