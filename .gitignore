@@ -5,7 +5,7 @@
 
 # Markdown 文件
 *.md
-
+!sentinel/reports/*.md
 # Python 缓存
 __pycache__/
 *.pyc
