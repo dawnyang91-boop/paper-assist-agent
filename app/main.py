@@ -4,15 +4,15 @@ import sys
 from typing import Optional
 
 from config import get_config, reload_config_from_env
-from embedding_service import EmbeddingService
-from Episodic_Memory import EpisodicMemory
-from memory_manager import MemoryManager
-from mcp_manager import MCPManager
-from qa_agent import QAAgent
-from Semantic_Memory import SemanticMemory
-from Sensory_Memory import SensoryMemory
-from skill_manager import SkillManager
-from Working_Memory import WorkingMemory
+from agent.qa_agent import QAAgent
+from memory.Episodic_Memory import EpisodicMemory
+from memory.memory_manager import MemoryManager
+from memory.Semantic_Memory import SemanticMemory
+from memory.Sensory_Memory import SensoryMemory
+from memory.Working_Memory import WorkingMemory
+from rag.embedding_service import EmbeddingService
+from tools.mcp_manager import MCPManager
+from tools.skill_manager import SkillManager
 
 
 def build_qdrant_client(config):
@@ -98,7 +98,7 @@ def ingest_files(data_dir: str):
         f"dim={config.embed_vector_size}"
     )
     try:
-        from DocumentConverter import DocumentConverter, chunk_paragraphs_by_tokens, files_in_directory, is_conversion_failure, split_paragraphs_with_headings, store_chunks_to_qdrant
+        from rag.DocumentConverter import DocumentConverter, chunk_paragraphs_by_tokens, files_in_directory, is_conversion_failure, split_paragraphs_with_headings, store_chunks_to_qdrant
     except ImportError as exc:
         raise RuntimeError("文档入库需要安装完整依赖：pip install -r requirements.txt") from exc
 

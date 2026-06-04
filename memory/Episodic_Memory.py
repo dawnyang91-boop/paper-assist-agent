@@ -5,8 +5,8 @@ from types import SimpleNamespace
 from typing import List, Dict, Any, Optional
 
 from config import AppConfig, get_config
-from importance_scorer import clamp_importance, score_memory_importance
-from qdrant_utils import ensure_collection_vector_size
+from memory.importance_scorer import clamp_importance, score_memory_importance
+from rag.qdrant_utils import ensure_collection_vector_size
 
 try:
     from qdrant_client.http import models

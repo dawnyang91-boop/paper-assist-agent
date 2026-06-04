@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 
 from config import AppConfig, get_config
-from reranker import RankedChunk
+from rag.reranker import RankedChunk
 
 
 @dataclass

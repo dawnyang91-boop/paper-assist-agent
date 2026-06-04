@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Iterable, List, Optional, Set
 
 from config import AppConfig, get_config
-from rag_query import RetrievedChunk
+from rag.rag_query import RetrievedChunk
 
 
 MODE_WEIGHTS = {

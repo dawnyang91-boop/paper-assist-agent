@@ -1,6 +1,6 @@
 from typing import Any
 
-from agent_state import AgentState
+from agent.agent_state import AgentState
 
 
 class LangGraphUnavailable(RuntimeError):

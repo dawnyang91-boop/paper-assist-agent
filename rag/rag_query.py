@@ -4,9 +4,9 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from config import AppConfig, get_config
-from embedding_service import EmbeddingService
-from redis_cache import RedisJsonCache
-from redis_runtime import RedisUnavailable
+from rag.embedding_service import EmbeddingService
+from storage.redis_cache import RedisJsonCache
+from storage.redis_runtime import RedisUnavailable
 
 
 QUERY_MODE_BASIC = "basic"

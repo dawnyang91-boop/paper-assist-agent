@@ -3,7 +3,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from config import AppConfig, get_config
-from redis_runtime import RedisRuntime, get_redis_runtime
+from storage.redis_runtime import RedisRuntime, get_redis_runtime
 
 
 class RedisWorkingMemoryStore:

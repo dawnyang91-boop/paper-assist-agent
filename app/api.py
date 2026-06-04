@@ -9,11 +9,11 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from auth_store import AuthStore
-from background_tasks import get_task_store, run_background_task
+from storage.background_tasks import get_task_store, run_background_task
 from config import env_signature, get_config, reload_config_from_env
-from main import build_assistant, ingest_files
+from app.main import build_assistant, ingest_files
 from pader_auth_client import PaderAuthClient, PaderAuthError
-from upload_store import UploadStore
+from storage.upload_store import UploadStore
 
 
 try:
@@ -530,7 +530,7 @@ def rename_session(session_id: str, payload: RenameSessionRequest, request: Requ
 def refresh_session_summary(session_id: str, payload: RefreshSummaryRequest, request: Request):
     _enforce_api_policy(request)
     from config import get_config
-    from session_summary import SessionSummaryBuilder
+    from memory.session_summary import SessionSummaryBuilder
 
     config = get_config()
     store = _transcript_store(user_id=_request_user_id(request))
@@ -610,7 +610,7 @@ def _request_user_id(request: Request) -> str:
 
 def _transcript_store(transcript_dir: Optional[str] = None, user_id: Optional[str] = None):
     from config import get_config
-    from transcript_store import TranscriptStore
+    from storage.transcript_store import TranscriptStore
 
     config = get_config()
     root_dir = Path(transcript_dir or config.transcript_dir)

@@ -2,7 +2,7 @@ import re
 from typing import List, Dict, Any, Optional
 
 from config import AppConfig, get_config
-from content_filters import is_polluted_context
+from memory.content_filters import is_polluted_context
 
 
 class SemanticMemory:

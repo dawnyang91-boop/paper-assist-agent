@@ -5,8 +5,8 @@ import uuid
 from typing import List, Dict, Optional
 
 from config import AppConfig, get_config
-from embedding_service import EmbeddingService
-from qdrant_utils import ensure_collection_vector_size
+from rag.embedding_service import EmbeddingService
+from rag.qdrant_utils import ensure_collection_vector_size
 
 def files_in_directory(directory):
     """列出目录下的所有文件, 并以绝对路径列表返回"""

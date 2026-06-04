@@ -6,9 +6,9 @@ from sklearn.metrics.pairwise import cosine_similarity
 from typing import List, Dict, Any, Optional
 
 from config import AppConfig, get_config
-from importance_scorer import clamp_importance, score_memory_importance
-from redis_runtime import RedisUnavailable, get_redis_runtime
-from redis_working_memory import RedisWorkingMemoryStore
+from memory.importance_scorer import clamp_importance, score_memory_importance
+from storage.redis_runtime import RedisUnavailable, get_redis_runtime
+from storage.redis_working_memory import RedisWorkingMemoryStore
 
 
 class WorkingMemory:

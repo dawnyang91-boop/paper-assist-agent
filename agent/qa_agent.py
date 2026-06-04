@@ -4,10 +4,10 @@ import re
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 from config import AppConfig, get_config
-from content_filters import is_polluted_context
-from context_builder import BuiltContext, ContextBuilder
-from rag_query import QUERY_MODE_BASIC, QUERY_MODE_HYDE, QUERY_MODE_MQE, RAGQueryEngine, RetrievedChunk
-from reranker import CandidateReranker, RankedChunk
+from memory.content_filters import is_polluted_context
+from rag.context_builder import BuiltContext, ContextBuilder
+from rag.rag_query import QUERY_MODE_BASIC, QUERY_MODE_HYDE, QUERY_MODE_MQE, RAGQueryEngine, RetrievedChunk
+from rag.reranker import CandidateReranker, RankedChunk
 from sentinel.defenses.security_manager import SecurityManager
 
 
@@ -166,8 +166,8 @@ Original user question:
         transcript_store_override: Optional[Any] = None,
         stream_callback: Optional[Callable[[str], None]] = None,
     ) -> QAResult:
-        from agent_graph import AgentGraph
-        from transcript_store import TranscriptStore
+        from agent.agent_graph import AgentGraph
+        from storage.transcript_store import TranscriptStore
 
         transcript_store = transcript_store_override
         if transcript_store is None and transcript_enabled is not None:
@@ -291,7 +291,7 @@ Original user question:
 
     def _run_langgraph(self, graph: Any, **payload: Any):
         try:
-            from langgraph_adapter import LangGraphAgentRunner
+            from agent.langgraph_adapter import LangGraphAgentRunner
 
             runner = LangGraphAgentRunner(agent_graph=graph)
             result = runner.invoke(payload)
