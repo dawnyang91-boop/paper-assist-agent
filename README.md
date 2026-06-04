@@ -33,19 +33,20 @@ QAAgent
         |
         v
 AgentGraph
-  |-- Input Guard / LLM-Sentinel
-  |-- Query Understanding
-  |-- RAG Retrieval: Basic + MQE + HyDE
-  |-- Candidate Reranker
-  |-- Memory Retrieval
-  |-- Skill Context
-  |-- MCP Tool Context
-  |-- RAG Sanitizer / Tool Output Sanitizer
-  |-- Context Builder
-  |-- LLM Answer Generation
-  |-- Output Guard
-  |-- Answer Verifier
-  |-- Memory Safety Check / Write Back
+  |-- process_user_input / load_session_state
+  |-- InputGuard / command-media-empty fast path
+  |-- understand_query / plan_retrieval_budget
+  |-- retrieve_rag + RAGSanitizer
+  |-- retrieve_memory + MemorySafetyFilter
+  |-- apply_skills
+  |-- assess_local_context / decide_next_action
+  |-- optional retrieve_more_rag / retrieve_more_memory
+  |-- optional ToolPolicyChecker / call_mcp_tools / ToolOutputSanitizer
+  |-- optional prepare_general_fallback
+  |-- build_context
+  |-- generate_answer + OutputGuard
+  |-- verify_answer / optional repair_answer
+  |-- MemorySafetyChecker / write_memory
         |
         v
 Final Answer + Sources + Trace
@@ -74,22 +75,62 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    A[process_user_input] --> B[InputGuard]
-    B --> C[understand_query]
-    C --> D[retrieve_rag]
-    D --> E[retrieve_memory]
-    E --> F[apply_skills]
-    F --> G[assess_local_context]
-    G --> H{need tools?}
-    H -- yes --> I[call_mcp_tools]
-    I --> J[ToolPolicy + ToolOutputSanitizer]
-    H -- no --> K[build_context]
-    J --> K
-    K --> L[generate_answer]
-    L --> M[OutputGuard]
-    M --> N[verify_answer]
-    N --> O[MemorySafetyChecker]
-    O --> P[finalize]
+    START([START]) --> A[process_user_input]
+
+    A --> A1{empty / command / media?}
+    A1 -- yes --> Z[finalize]
+    A1 -- no --> B[InputGuard]
+
+    B --> B1{input safe?}
+    B1 -- blocked --> Z
+    B1 -- safe / warning --> C[load_session_state]
+
+    C --> D[understand_query]
+    D --> E[plan_retrieval_budget]
+
+    E --> F[retrieve_rag]
+    F --> F1[RAGSanitizer<br/>remove instruction pollution<br/>assign trust / risk / penalty]
+    F1 --> G[retrieve_memory]
+    G --> G1[Memory retrieval safety filter<br/>drop polluted or unsafe memories]
+    G1 --> H[apply_skills]
+
+    H --> I[assess_local_context]
+    I --> J[decide_next_action]
+
+    J -->|need broader RAG| K[retrieve_more_rag]
+    K --> F
+
+    J -->|need broader memory| L[retrieve_more_memory]
+    L --> G
+
+    J -->|local context insufficient<br/>tool allowed| M[ToolPolicyChecker]
+    M --> M1{tool request allowed?}
+    M1 -- no --> I
+    M1 -- yes --> N[call_mcp_tools]
+    N --> N1[ToolOutputSanitizer<br/>treat tool result as untrusted data]
+    N1 --> I
+
+    J -->|local and tool context insufficient<br/>general knowledge allowed| O[prepare_general_fallback]
+    O --> P[build_context]
+
+    J -->|context enough| P
+
+    P --> P1[Context boundary builder<br/>separate trusted instructions<br/>from untrusted RAG / memory / tool data]
+    P1 --> Q[generate_answer]
+    Q --> R[OutputGuard<br/>detect secrets / prompt leakage / PII]
+    R --> S[verify_answer]
+
+    S --> T{repair needed?}
+    T -- yes --> U[repair_answer]
+    U --> R
+
+    T -- no --> V[MemorySafetyChecker]
+    V --> V1{safe to write memory?}
+    V1 -- yes --> W[write_memory]
+    V1 -- no --> Z
+    W --> Z
+
+    Z --> END([END])
 ```
 
 ### 2.3 Sentinel Security Pipeline
