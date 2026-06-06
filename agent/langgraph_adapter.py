@@ -6,10 +6,9 @@ class LangGraphUnavailable(RuntimeError):
 
 
 class LangGraphAgentRunner:
-    def __init__(self, agent_graph: Any):
-        try:
-            from langgraph.graph import END, StateGraph
-        except ImportError as exc:
-            raise LangGraphUnavailable("langgraph is not installed") from exc
-        self.agent_graph = agent_graph
-        self.END = END
+    """Compatibility runner for AGENT_RUNTIME=langgraph.
+
+    The project AgentGraph stores rich AgentState objects that are not msgpack
+    serializable by LangGraph's MemorySaver. This runner keeps the public
+    langgraph adapter interface but delegates to AgentGraph.run without using
+    LangGraph checkpoint serialization
