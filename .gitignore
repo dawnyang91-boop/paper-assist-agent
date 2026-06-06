@@ -3,6 +3,8 @@
 **/.env
 .env.*git status
 
+*.pdf
+
 # Markdown 文件
 *.md
 !sentinel/reports/*.md
