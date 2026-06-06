@@ -5,6 +5,7 @@ from app.main import (
     format_latency_benchmark,
     format_reference_sources,
     parse_ingest_command,
+    resolve_ingest_file_paths,
     summarize_latency,
 )
 from rag.context_builder import ContextDocument
@@ -115,3 +116,16 @@ def test_parse_ingest_command_supports_default_and_custom_directory():
     assert parse_ingest_command("/ingest ./papers") == "./papers"
     assert parse_ingest_command("/ingest    ") == "./test_files"
     assert parse_ingest_command("请总结 SENet") is None
+
+
+def test_resolve_ingest_file_paths_supports_single_file_and_directory(tmp_path):
+    single_file = tmp_path / "paper.pdf"
+    single_file.write_text("paper", encoding="utf-8")
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    nested_file = docs_dir / "note.md"
+    nested_file.write_text("note", encoding="utf-8")
+
+    assert resolve_ingest_file_paths(str(single_file), lambda path: []) == [str(single_file)]
+    assert resolve_ingest_file_paths(str(docs_dir), lambda path: [str(nested_file)]) == [str(nested_file)]
+    assert resolve_ingest_file_paths(str(tmp_path / "missing"), lambda path: []) == []

@@ -207,6 +207,17 @@ def benchmark_runtime(
     return rows
 
 
+def resolve_ingest_file_paths(path: str, files_in_directory_func) -> list[str]:
+    ingest_path = os.path.expanduser((path or "").strip())
+    if not ingest_path:
+        return []
+    if os.path.isfile(ingest_path):
+        return [ingest_path]
+    if os.path.isdir(ingest_path):
+        return list(files_in_directory_func(ingest_path))
+    return []
+
+
 def ingest_files(data_dir: str):
     config = reload_config_from_env(override=True)
     print(
@@ -221,9 +232,9 @@ def ingest_files(data_dir: str):
         raise RuntimeError("文档入库需要安装完整依赖：pip install -r requirements.txt") from exc
 
     converter = DocumentConverter()
-    file_paths = list(files_in_directory(data_dir))
+    file_paths = resolve_ingest_file_paths(data_dir, files_in_directory)
     if not file_paths:
-        print(f"未找到可入库文件：{data_dir}")
+        print(f"未找到可入库文件或目录不存在：{data_dir}")
         return
 
     for file_path in file_paths:

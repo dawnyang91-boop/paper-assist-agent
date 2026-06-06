@@ -22,6 +22,24 @@ class LangGraphAdapterTest(unittest.TestCase):
             with self.assertRaises(LangGraphUnavailable):
                 LangGraphAgentRunner(agent_graph=object())
 
+    def test_checkpoint_config_adds_thread_id_from_session_id(self):
+        runner = object.__new__(LangGraphAgentRunner)
+
+        config = runner._checkpoint_config({"session_id": "demo"})
+
+        self.assertEqual(config["configurable"]["thread_id"], "demo")
+
+    def test_checkpoint_config_preserves_existing_configurable_key(self):
+        runner = object.__new__(LangGraphAgentRunner)
+
+        config = runner._checkpoint_config(
+            {"session_id": "demo"},
+            config={"configurable": {"checkpoint_id": "cp-1"}},
+        )
+
+        self.assertEqual(config["configurable"]["checkpoint_id"], "cp-1")
+        self.assertNotIn("thread_id", config["configurable"])
+
 
 if __name__ == "__main__":
     unittest.main()

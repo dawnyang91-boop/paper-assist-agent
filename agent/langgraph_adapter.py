@@ -24,7 +24,18 @@ class LangGraphAgentRunner:
         self.compiled = self._compile()
 
     def invoke(self, state: Any, config: dict | None = None):
-        return self.compiled.invoke(state, config=config or {})
+        return self.compiled.invoke(state, config=self._checkpoint_config(state, config=config))
+
+    def _checkpoint_config(self, state: Any, config: dict | None = None) -> dict:
+        config = dict(config or {})
+        configurable = dict(config.get("configurable") or {})
+        if not any(configurable.get(key) for key in ("thread_id", "checkpoint_ns", "checkpoint_id")):
+            session_id = "default"
+            if isinstance(state, dict):
+                session_id = str(state.get("session_id") or session_id)
+            configurable["thread_id"] = session_id
+        config["configurable"] = configurable
+        return config
 
     def _compile(self):
         graph = self.StateGraph(dict)
