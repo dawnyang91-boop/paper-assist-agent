@@ -382,11 +382,21 @@ class AgentGraph:
                 per_query_limit=per_query_limit,
                 mqe_count=mqe_count,
             )
+            state.usage["retrieval_diagnostics"] = getattr(
+                self.agent.query_engine,
+                "last_retrieval_diagnostics",
+                {},
+            )
             state.ranked_chunks = self.agent.reranker.rerank(
                 question=state.question,
                 candidates=state.candidates,
                 top_k=rerank_top_k or self.config.rag_rerank_top_k,
             )
+            if hasattr(self.agent.query_engine, "entity_extractor"):
+                coverage = self.agent.query_engine.entity_extractor.coverage(state.question, state.ranked_chunks)
+                state.usage["entity_coverage"] = coverage.to_dict()
+                diagnostics = state.usage.setdefault("retrieval_diagnostics", {})
+                diagnostics["entity_coverage"] = coverage.to_dict()
             self.sanitize_rag_context(state)
         except Exception as exc:
             state.add_error("retrieve_rag", exc)
@@ -479,6 +489,10 @@ class AgentGraph:
         )
         threshold = self.config.agent_loop_local_relevance_threshold
         has_relevant_local_context = max(top_document_topic, top_memory_topic) >= threshold
+        entity_coverage = state.usage.get("entity_coverage") or (state.usage.get("retrieval_diagnostics", {}) or {}).get("entity_coverage") or {}
+        entity_coverage_failed = bool(entity_coverage.get("entity_coverage_failed"))
+        if self.config.rag_entity_required_for_strong_query and entity_coverage_failed:
+            has_relevant_local_context = False
         online_search_available = self._online_search_available()
         online_available = bool(
             include_mcp
@@ -505,6 +519,7 @@ class AgentGraph:
             "top_memory_lexical": top_memory_lexical,
             "top_memory_topic": top_memory_topic,
             "threshold": threshold,
+            "entity_coverage_failed": entity_coverage_failed,
             "has_relevant_local_context": has_relevant_local_context,
             "online_search_available": online_search_available,
             "online_available": online_available,
@@ -1212,10 +1227,14 @@ class AgentGraph:
 
     def _context_evidence_status(self, state: AgentState) -> Dict[str, Any]:
         status = dict(state.usage.get("local_context_assessment", {}) or {})
+        retrieval_diagnostics = state.usage.get("retrieval_diagnostics", {}) or {}
         status.update({
             "original_question": state.original_question or state.raw_input,
             "english_question": state.question,
             "response_language": state.response_language or "Chinese",
+            "retrieval_diagnostics": retrieval_diagnostics,
+            "entity_profile": retrieval_diagnostics.get("entity_profile", {}),
+            "entity_coverage": state.usage.get("entity_coverage") or retrieval_diagnostics.get("entity_coverage", {}),
         })
         return status
 

@@ -98,6 +98,10 @@ class ContextBuilder:
                     "lexical_score": ranked.lexical_score,
                     "diversity_score": ranked.diversity_score,
                     "mode_score": ranked.mode_score,
+                    "bm25_score": ranked.bm25_score,
+                    "entity_score": ranked.entity_score,
+                    "hybrid_bonus": ranked.hybrid_bonus,
+                    "entity_missing_penalty": ranked.entity_missing_penalty,
                     "source_hits": ranked.chunk.source_hits,
                     "truncated": content != ranked.content.strip(),
                     "payload": payload,
@@ -149,6 +153,25 @@ class ContextBuilder:
                 "",
                 "Answer mode: local context is insufficient and online search is unavailable or returned no useful result. Clearly separate local evidence from model general knowledge.",
             ])
+
+        entity_profile = evidence_status.get("entity_profile") or {}
+        entity_coverage = evidence_status.get("entity_coverage") or {}
+        required_entities = entity_coverage.get("required_entities") or entity_profile.get("entities") or []
+        missing_entities = entity_coverage.get("missing_entities") or []
+        covered_entities = entity_coverage.get("covered_entities") or []
+        if required_entities:
+            sections.extend([
+                "",
+                "Strong entity coverage:",
+                f"- Required entities from user query: {', '.join(map(str, required_entities))}",
+                f"- Covered by retrieved local context: {', '.join(map(str, covered_entities)) if covered_entities else 'none'}",
+            ])
+            if missing_entities:
+                sections.append(
+                    "- Missing entities: "
+                    + ", ".join(map(str, missing_entities))
+                    + ". If these entities are essential, say local evidence is insufficient before using general knowledge."
+                )
 
         if citation_memories:
             sections.extend(["", "Available memories:"])

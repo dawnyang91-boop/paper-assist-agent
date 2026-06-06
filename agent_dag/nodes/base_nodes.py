@@ -52,17 +52,25 @@ class RAGRetrieverNode(DAGNode):
             per_query_limit=context.privileged_context.get("per_query_limit"),
             mqe_count=context.privileged_context.get("mqe_count"),
         )
+        retrieval_diagnostics = getattr(agent.query_engine, "last_retrieval_diagnostics", {})
         ranked = agent.reranker.rerank(
             question=context.user_query,
             candidates=candidates,
             top_k=context.privileged_context.get("rerank_top_k") or agent.config.rag_rerank_top_k,
         )
+        entity_coverage = {}
+        if hasattr(agent.query_engine, "entity_extractor"):
+            entity_coverage = agent.query_engine.entity_extractor.coverage(context.user_query, ranked).to_dict()
+            retrieval_diagnostics = dict(retrieval_diagnostics or {})
+            retrieval_diagnostics["entity_coverage"] = entity_coverage
         decisions = []
         if agent.security_manager is not None:
             ranked, decisions = agent.security_manager.sanitize_ranked_chunks(ranked)
         return {
             "candidates": candidates,
             "ranked_chunks": ranked,
+            "retrieval_diagnostics": retrieval_diagnostics,
+            "entity_coverage": entity_coverage,
             "sentinel_decisions": decisions,
             "content": f"Retrieved {len(ranked)} ranked RAG chunks.",
         }
@@ -167,9 +175,13 @@ class WriterNode(DAGNode):
         evidence_store: SharedEvidenceStore = context.privileged_context["evidence_store"]
         ranked_chunks = []
         memories = []
+        retrieval_diagnostics: Dict[str, Any] = {}
+        entity_coverage: Dict[str, Any] = {}
         for item in evidence_store.visible_to("writer"):
             if item.source_type == "retriever":
                 ranked_chunks.extend(item.metadata.get("ranked_chunks", []))
+                retrieval_diagnostics.update(item.metadata.get("retrieval_diagnostics", {}) or {})
+                entity_coverage.update(item.metadata.get("entity_coverage", {}) or {})
             elif item.source_type in {"memory", "skill", "external_retriever"}:
                 memories.extend(item.metadata.get("memories", []) or item.metadata.get("skill_contexts", []) or item.metadata.get("web_contexts", []))
         built_context = agent.context_builder.build_context(
@@ -182,6 +194,9 @@ class WriterNode(DAGNode):
                 "original_question": context.privileged_context.get("original_question") or context.user_query,
                 "response_language": context.privileged_context.get("response_language") or "Chinese",
                 "runtime": "dag",
+                "retrieval_diagnostics": retrieval_diagnostics,
+                "entity_profile": retrieval_diagnostics.get("entity_profile", {}),
+                "entity_coverage": entity_coverage or retrieval_diagnostics.get("entity_coverage", {}),
             },
         )
         try:
