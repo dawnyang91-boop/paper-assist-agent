@@ -386,6 +386,8 @@ python -m app.main chat --session-id demo --show-trace
 /exit       退出
 /quit       退出
 /media xxx  将图片或音频写入感知记忆
+/ingest     将 ./test_files 写入 RAG 知识库
+/ingest xxx 将指定目录写入 RAG 知识库
 ```
 
 ### 8.3 Legacy vs DAG 延迟对比

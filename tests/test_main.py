@@ -1,6 +1,12 @@
 from types import SimpleNamespace
 
-from app.main import format_agent_trace, format_latency_benchmark, format_reference_sources, summarize_latency
+from app.main import (
+    format_agent_trace,
+    format_latency_benchmark,
+    format_reference_sources,
+    parse_ingest_command,
+    summarize_latency,
+)
 from rag.context_builder import ContextDocument
 
 
@@ -102,3 +108,10 @@ def test_format_latency_benchmark_renders_runtime_comparison():
     assert "| legacy | 2 | 100.0" in text
     assert "| dag | 2 | 80.0" in text
     assert "legacy_avg / dag_avg = 1.25" in text
+
+
+def test_parse_ingest_command_supports_default_and_custom_directory():
+    assert parse_ingest_command("/ingest") == "./test_files"
+    assert parse_ingest_command("/ingest ./papers") == "./papers"
+    assert parse_ingest_command("/ingest    ") == "./test_files"
+    assert parse_ingest_command("请总结 SENet") is None

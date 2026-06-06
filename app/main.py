@@ -241,6 +241,16 @@ def ingest_files(data_dir: str):
         store_chunks_to_qdrant(chunks, source_file=file_path)
 
 
+def parse_ingest_command(user_input: str) -> Optional[str]:
+    command = (user_input or "").strip()
+    if command == "/ingest":
+        return "./test_files"
+    if command.startswith("/ingest "):
+        data_dir = command[len("/ingest "):].strip()
+        return data_dir or "./test_files"
+    return None
+
+
 def format_reference_sources(result) -> str:
     documents = getattr(getattr(result, "built_context", None), "documents", []) or []
     lines = ["", "引用来源："]
@@ -320,6 +330,7 @@ def chat(session_id: str, load_sensory_model: bool = False, show_trace: bool = F
     agent, memory_manager = build_assistant(load_sensory_model=load_sensory_model)
     print("私域问答助手已启动。输入问题开始对话，输入 /exit 退出。")
     print("可用命令：/media <文件路径>  将图片或音频写入感知记忆")
+    print("可用命令：/ingest [目录路径]  将目录内文档写入 RAG 知识库，默认 ./test_files")
 
     while True:
         try:
@@ -333,6 +344,15 @@ def chat(session_id: str, load_sensory_model: bool = False, show_trace: bool = F
         if user_input in {"/exit", "/quit"}:
             print("再见。")
             break
+        ingest_dir = parse_ingest_command(user_input)
+        if ingest_dir is not None:
+            try:
+                print(f"开始入库：{ingest_dir}")
+                ingest_files(ingest_dir)
+                print("入库任务执行完成。")
+            except Exception as exc:
+                print(f"入库失败：{exc}")
+            continue
         if user_input.startswith("/media "):
             file_path = user_input[len("/media "):].strip()
             try:
