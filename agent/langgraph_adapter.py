@@ -11,5 +11,12 @@ class LangGraphAgentRunner:
         self.agent_graph = agent_graph
 
     def invoke(self, state, config=None):
-        payload = dict(state or {})
-        clean =
+        payload = {
+            key: value
+            for key, value in dict(state or {}).items()
+            if not str(key).startswith("_")
+        }
+        result = self.agent_graph.run(**payload)
+        payload["_agent_state"] = result
+        payload["answer"] = getattr(result, "answer", None)
+        payload[
