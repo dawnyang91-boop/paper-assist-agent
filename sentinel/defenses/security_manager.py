@@ -115,6 +115,50 @@ class SecurityManager:
     def check_agent_message(self, message: Dict[str, Any]) -> SecurityDecision:
         return self.inter_agent_guard.check_message(message)
 
+    def check_node_output(self, node_id: str, output: str, target_receivers: Iterable[str] | None = None) -> SecurityDecision:
+        return self._merge_decisions([
+            self.rag_sanitizer.sanitize_text(output),
+            self.supply_chain_guard.check_text(output, artifact_type=f"dag_node_output:{node_id}"),
+            self.cascade_guard.check_answer_taint(
+                output,
+                context_trace={"answer_used_risky_context": False, "target_receivers": list(target_receivers or [])},
+            ),
+        ])
+
+    def check_evidence_write(self, evidence_item: Dict[str, Any]) -> SecurityDecision:
+        content = str(evidence_item.get("sanitized_content") or evidence_item.get("content") or "")
+        share_level = str(evidence_item.get("share_level") or "")
+        if share_level == "never_share":
+            return SecurityDecision(
+                allowed=False,
+                action="block",
+                risk_score=1.0,
+                findings=[],
+                metadata={"reason": "never_share evidence cannot be written to SharedEvidenceStore"},
+            )
+        return self.rag_sanitizer.sanitize_text(content)
+
+    def check_dag_tool_action(
+        self,
+        node_id: str,
+        tool_name: str,
+        tool_args: Any = None,
+        context: Dict[str, Any] | None = None,
+    ) -> SecurityDecision:
+        context = context or {}
+        return self._merge_decisions([
+            self.check_tool_call(tool_name, args=tool_args, user_context=context.get("user_context", {})),
+            self.check_rogue_action(context.get("user_goal", ""), {"tool_name": tool_name, "tool_args": tool_args}, user_context=context.get("user_context", {})),
+            self.check_cascade_tool_decision({"tool_name": tool_name, "arguments": tool_args}, upstream_risks=context.get("upstream_risks", {})),
+        ])
+
+    def check_dag_memory_write(self, question: str, answer: str, trace: Dict[str, Any] | None = None) -> SecurityDecision:
+        return self._merge_decisions([
+            self.check_memory_candidate(answer),
+            self.check_cascade_memory_write(question, answer, context_trace=trace),
+            self.check_rogue_trace(trace),
+        ])
+
     def sanitize_agent_message_output(self, message: Dict[str, Any]) -> SecurityDecision:
         return self.inter_agent_guard.sanitize_agent_output(message)
 

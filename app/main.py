@@ -1,6 +1,9 @@
 import argparse
 import os
+import statistics
 import sys
+import time
+from dataclasses import replace
 from typing import Optional
 
 from config import get_config, reload_config_from_env
@@ -55,8 +58,8 @@ def build_neo4j_client(config):
     return driver
 
 
-def build_assistant(load_sensory_model: bool = False):
-    config = get_config()
+def build_assistant(load_sensory_model: bool = False, config_override=None):
+    config = config_override or get_config()
     qdrant = build_qdrant_client(config)
     neo4j = build_neo4j_client(config)
     embedding_service = EmbeddingService(config=config)
@@ -87,6 +90,121 @@ def build_assistant(load_sensory_model: bool = False):
         skill_manager=skill_manager,
     )
     return agent, memory_manager
+
+
+def summarize_latency(samples_ms: list[float]) -> dict:
+    if not samples_ms:
+        return {
+            "count": 0,
+            "avg_ms": 0.0,
+            "p50_ms": 0.0,
+            "min_ms": 0.0,
+            "max_ms": 0.0,
+        }
+    sorted_samples = sorted(samples_ms)
+    return {
+        "count": len(samples_ms),
+        "avg_ms": round(sum(samples_ms) / len(samples_ms), 2),
+        "p50_ms": round(statistics.median(sorted_samples), 2),
+        "min_ms": round(min(sorted_samples), 2),
+        "max_ms": round(max(sorted_samples), 2),
+    }
+
+
+def format_latency_benchmark(rows: list[dict]) -> str:
+    lines = [
+        "",
+        "Legacy vs DAG latency benchmark:",
+        "",
+        "| runtime | runs | avg_ms | p50_ms | min_ms | max_ms | docs | memories | dag_nodes | dag_edges |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for row in rows:
+        summary = row.get("summary", {})
+        lines.append(
+            "| {runtime} | {count} | {avg_ms} | {p50_ms} | {min_ms} | {max_ms} | {docs} | {memories} | {dag_nodes} | {dag_edges} |".format(
+                runtime=row.get("runtime", "unknown"),
+                count=summary.get("count", 0),
+                avg_ms=summary.get("avg_ms", 0.0),
+                p50_ms=summary.get("p50_ms", 0.0),
+                min_ms=summary.get("min_ms", 0.0),
+                max_ms=summary.get("max_ms", 0.0),
+                docs=row.get("document_count", 0),
+                memories=row.get("memory_count", 0),
+                dag_nodes=row.get("dag_nodes", 0),
+                dag_edges=row.get("dag_edges", 0),
+            )
+        )
+
+    by_runtime = {row.get("runtime"): row for row in rows}
+    legacy = by_runtime.get("legacy")
+    dag = by_runtime.get("dag")
+    if legacy and dag:
+        legacy_avg = float(legacy.get("summary", {}).get("avg_ms") or 0.0)
+        dag_avg = float(dag.get("summary", {}).get("avg_ms") or 0.0)
+        if legacy_avg > 0 and dag_avg > 0:
+            speedup = round(legacy_avg / dag_avg, 3)
+            delta = round(dag_avg - legacy_avg, 2)
+            lines.extend([
+                "",
+                f"对比：dag / legacy avg delta = {delta} ms，legacy_avg / dag_avg = {speedup}。",
+            ])
+    return "\n".join(lines)
+
+
+def benchmark_runtime(
+    question: str,
+    session_id: str = "benchmark",
+    repeat: int = 3,
+    warmup: int = 0,
+    load_sensory_model: bool = False,
+    include_memory_manager: bool = True,
+    include_mcp: bool = True,
+    include_skills: bool = True,
+):
+    base_config = reload_config_from_env(override=True)
+    repeat = max(1, repeat)
+    warmup = max(0, warmup)
+    rows = []
+
+    for runtime in ("legacy", "dag"):
+        config = replace(base_config, agent_runtime=runtime)
+        agent, _memory_manager = build_assistant(
+            load_sensory_model=load_sensory_model,
+            config_override=config,
+        )
+        samples = []
+        last_result = None
+        total_runs = warmup + repeat
+        for index in range(total_runs):
+            started = time.perf_counter()
+            result = agent.answer(
+                question,
+                session_id=session_id,
+                include_memory_manager=include_memory_manager,
+                include_mcp=include_mcp,
+                include_skills=include_skills,
+                write_memory=False,
+            )
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            last_result = result
+            if index >= warmup:
+                samples.append(elapsed_ms)
+
+        metadata = getattr(last_result, "metadata", {}) if last_result is not None else {}
+        dag_trace = metadata.get("dag") or {}
+        rows.append({
+            "runtime": runtime,
+            "summary": summarize_latency(samples),
+            "document_count": metadata.get("document_count", 0),
+            "memory_count": metadata.get("memory_count", 0),
+            "dag_nodes": len(dag_trace.get("nodes") or []),
+            "dag_edges": len(dag_trace.get("edges") or []),
+            "answer_chars": len(getattr(last_result, "answer", "") if last_result is not None else ""),
+        })
+
+    print(format_latency_benchmark(rows))
+    return rows
 
 
 def ingest_files(data_dir: str):
@@ -248,6 +366,16 @@ def parse_args(argv: Optional[list] = None):
     chat_parser.add_argument("--load-sensory-model", action="store_true", help="加载中文 CLIP 模型用于图片 embedding")
     chat_parser.add_argument("--show-trace", action="store_true", help="显示 Agent Loop 决策、工具调用和校验信息")
 
+    benchmark_parser = subparsers.add_parser("benchmark-runtime", help="对比 legacy 与 DAG runtime 的问答延迟")
+    benchmark_parser.add_argument("question", help="用于 benchmark 的问题")
+    benchmark_parser.add_argument("--session-id", default="benchmark", help="会话 ID，默认 benchmark")
+    benchmark_parser.add_argument("--repeat", type=int, default=3, help="每个 runtime 统计的正式运行次数，默认 3")
+    benchmark_parser.add_argument("--warmup", type=int, default=0, help="每个 runtime 的预热次数，不计入统计，默认 0")
+    benchmark_parser.add_argument("--load-sensory-model", action="store_true", help="加载中文 CLIP 模型用于图片 embedding")
+    benchmark_parser.add_argument("--no-memory", action="store_true", help="benchmark 时跳过 MemoryManager 召回")
+    benchmark_parser.add_argument("--no-mcp", action="store_true", help="benchmark 时跳过 MCP 上下文/工具")
+    benchmark_parser.add_argument("--no-skills", action="store_true", help="benchmark 时跳过 Skills")
+
     return parser.parse_args(argv)
 
 
@@ -267,8 +395,20 @@ def main(argv: Optional[list] = None):
     if args.command == "chat":
         chat(session_id=args.session_id, load_sensory_model=args.load_sensory_model, show_trace=args.show_trace)
         return
+    if args.command == "benchmark-runtime":
+        benchmark_runtime(
+            args.question,
+            session_id=args.session_id,
+            repeat=args.repeat,
+            warmup=args.warmup,
+            load_sensory_model=args.load_sensory_model,
+            include_memory_manager=not args.no_memory,
+            include_mcp=not args.no_mcp,
+            include_skills=not args.no_skills,
+        )
+        return
 
-    print("请指定命令：ingest、ask 或 chat。示例：python main.py chat")
+    print("请指定命令：ingest、ask、chat 或 benchmark-runtime。示例：python -m app.main chat")
 
 
 if __name__ == "__main__":

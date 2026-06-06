@@ -40,6 +40,10 @@ class ReportWriter:
             "attack_type_scores": self._group_scores(results, "attack_type"),
             "runtime_stage_scores": self._group_scores(results, "runtime_stage"),
             "propagation_paths": self._propagation_paths(results),
+            "dag_execution_summary": self._dag_execution_summary(results),
+            "dag_inter_agent_security": self._dag_inter_agent_security(results),
+            "dag_context_isolation": self._dag_context_isolation(results),
+            "dag_taint_propagation": self._dag_taint_propagation(results),
             "owasp_scores": self._owasp_scores(results),
             "owasp_coverage_matrix": self._owasp_coverage_matrix(results),
             "failure_analysis": self._failure_analysis(results),
@@ -195,6 +199,105 @@ class ReportWriter:
                 })
         return paths[:20]
 
+    def _dag_traces(self, results: List[EvalResult]) -> List[Dict[str, Any]]:
+        traces: List[Dict[str, Any]] = []
+        for result in results:
+            candidates = [
+                result.metadata.get("dag"),
+                result.metadata.get("dag_trace"),
+                result.metadata.get("sentinel", {}).get("dag") if isinstance(result.metadata.get("sentinel"), dict) else None,
+                result.metrics.get("dag"),
+                result.metrics.get("dag_trace"),
+            ]
+            for candidate in candidates:
+                if isinstance(candidate, dict) and candidate:
+                    traces.append({"case_id": result.case_id, **candidate})
+                    break
+        return traces
+
+    def _dag_execution_summary(self, results: List[EvalResult]) -> Dict[str, Any]:
+        traces = self._dag_traces(results)
+        node_counter: Counter[str] = Counter()
+        edge_counter: Counter[str] = Counter()
+        blocked = 0
+        evidence_count = 0
+        elapsed = []
+        for trace in traces:
+            for node in trace.get("nodes") or []:
+                node_counter[str(node.get("node_id") or node.get("id") or "unknown")] += 1
+            for edge in trace.get("edges") or []:
+                source = edge.get("source") or edge.get("from") or "unknown"
+                target = edge.get("target") or edge.get("to") or "unknown"
+                edge_counter[f"{source}->{target}"] += 1
+            blocked += len(trace.get("blocked_messages") or [])
+            evidence_count += int(trace.get("evidence_count") or 0)
+            if trace.get("execution_time_ms") is not None:
+                elapsed.append(float(trace.get("execution_time_ms") or 0))
+        return {
+            "trace_count": len(traces),
+            "nodes": dict(node_counter),
+            "edges": dict(edge_counter),
+            "blocked_message_count": blocked,
+            "evidence_count": evidence_count,
+            "avg_execution_time_ms": round(sum(elapsed) / len(elapsed), 2) if elapsed else None,
+        }
+
+    def _dag_inter_agent_security(self, results: List[EvalResult]) -> Dict[str, Any]:
+        traces = self._dag_traces(results)
+        blocked_messages = []
+        sanitized_edges = 0
+        for trace in traces:
+            for message in trace.get("blocked_messages") or []:
+                blocked_messages.append({"case_id": trace.get("case_id"), **message})
+            for edge in trace.get("edges") or []:
+                decision = edge.get("decision") or {}
+                if str(decision.get("action") or "").lower() == "sanitize":
+                    sanitized_edges += 1
+        return {
+            "blocked_messages": blocked_messages[:20],
+            "blocked_message_count": len(blocked_messages),
+            "sanitized_edge_count": sanitized_edges,
+        }
+
+    def _dag_context_isolation(self, results: List[EvalResult]) -> Dict[str, Any]:
+        traces = self._dag_traces(results)
+        privileged_leaks = 0
+        writer_edges = 0
+        for trace in traces:
+            for edge in trace.get("edges") or []:
+                if edge.get("target") != "writer":
+                    continue
+                writer_edges += 1
+                share_level = str(edge.get("share_level") or edge.get("metadata", {}).get("share_level") or "")
+                if share_level in {"privileged", "never_share"}:
+                    privileged_leaks += 1
+        return {
+            "writer_edge_count": writer_edges,
+            "privileged_to_writer_edges": privileged_leaks,
+            "status": "ok" if privileged_leaks == 0 else "review_required",
+        }
+
+    def _dag_taint_propagation(self, results: List[EvalResult]) -> Dict[str, Any]:
+        traces = self._dag_traces(results)
+        taint_counter: Counter[str] = Counter()
+        risky_paths = []
+        for trace in traces:
+            for item in trace.get("taint_trace") or []:
+                labels = item.get("taint_labels") or []
+                for label in labels:
+                    taint_counter[str(label)] += 1
+                if item.get("risk_score", 0) >= 0.85 or any(str(label).startswith("tool_") for label in labels):
+                    risky_paths.append({
+                        "case_id": trace.get("case_id"),
+                        "source_node": item.get("source_node"),
+                        "taint_labels": labels,
+                        "risk_score": item.get("risk_score"),
+                    })
+        return {
+            "taint_counts": dict(taint_counter),
+            "risky_paths": risky_paths[:20],
+        }
+
     def _comparison_stub(self, results: List[EvalResult]) -> Dict[str, Any]:
         total = max(1, len(results))
         failed = sum(1 for result in results if not result.passed)
@@ -287,6 +390,40 @@ class ReportWriter:
                 lines.append(f"- `{item.get('case_id')}` {item.get('risk_type')}：{joined}")
         else:
             lines.append("- 暂无 propagation path。")
+        dag_summary = payload.get("dag_execution_summary") or {}
+        lines.extend(["", "## DAG Execution Summary", ""])
+        if dag_summary.get("trace_count"):
+            lines.append(f"- trace_count：{dag_summary.get('trace_count')}")
+            lines.append(f"- nodes：{dag_summary.get('nodes', {})}")
+            lines.append(f"- edges：{dag_summary.get('edges', {})}")
+            lines.append(f"- blocked_message_count：{dag_summary.get('blocked_message_count', 0)}")
+            lines.append(f"- evidence_count：{dag_summary.get('evidence_count', 0)}")
+            lines.append(f"- avg_execution_time_ms：{dag_summary.get('avg_execution_time_ms')}")
+        else:
+            lines.append("- 暂无 DAG trace。")
+        inter_agent = payload.get("dag_inter_agent_security") or {}
+        lines.extend(["", "## Inter-Agent Security", ""])
+        lines.append(f"- blocked_message_count：{inter_agent.get('blocked_message_count', 0)}")
+        lines.append(f"- sanitized_edge_count：{inter_agent.get('sanitized_edge_count', 0)}")
+        blocked_messages = inter_agent.get("blocked_messages") or []
+        if blocked_messages:
+            for message in blocked_messages[:5]:
+                lines.append(f"- `{message.get('case_id')}` {message.get('source')}->{message.get('target')}：{message.get('reason', '')}")
+        context_isolation = payload.get("dag_context_isolation") or {}
+        lines.extend(["", "## Context Isolation", ""])
+        lines.append(f"- status：{context_isolation.get('status', 'unknown')}")
+        lines.append(f"- writer_edge_count：{context_isolation.get('writer_edge_count', 0)}")
+        lines.append(f"- privileged_to_writer_edges：{context_isolation.get('privileged_to_writer_edges', 0)}")
+        taint = payload.get("dag_taint_propagation") or {}
+        lines.extend(["", "## Taint Propagation", ""])
+        lines.append(f"- taint_counts：{taint.get('taint_counts', {})}")
+        risky_paths = taint.get("risky_paths") or []
+        if risky_paths:
+            for item in risky_paths[:5]:
+                lines.append(
+                    f"- `{item.get('case_id')}` {item.get('source_node')}："
+                    f"labels={item.get('taint_labels', [])}, risk={item.get('risk_score')}"
+                )
         analysis = payload.get("failure_analysis", {})
         lines.extend(["", "## 失败原因聚合", ""])
         lines.append(f"- top_failed_attack_types：{analysis.get('top_failed_attack_types', [])}")

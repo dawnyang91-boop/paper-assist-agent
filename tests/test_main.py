@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from app.main import format_agent_trace, format_reference_sources
+from app.main import format_agent_trace, format_latency_benchmark, format_reference_sources, summarize_latency
 from rag.context_builder import ContextDocument
 
 
@@ -66,3 +66,39 @@ def test_format_agent_trace_lists_decisions_and_verification():
     assert "build_context" in text
     assert "fetch.fetch success=True" in text
     assert "coverage=1.0" in text
+
+
+def test_summarize_latency_returns_stable_statistics():
+    summary = summarize_latency([10.0, 20.0, 30.0])
+
+    assert summary["count"] == 3
+    assert summary["avg_ms"] == 20.0
+    assert summary["p50_ms"] == 20.0
+    assert summary["min_ms"] == 10.0
+    assert summary["max_ms"] == 30.0
+
+
+def test_format_latency_benchmark_renders_runtime_comparison():
+    text = format_latency_benchmark([
+        {
+            "runtime": "legacy",
+            "summary": {"count": 2, "avg_ms": 100.0, "p50_ms": 100.0, "min_ms": 90.0, "max_ms": 110.0},
+            "document_count": 2,
+            "memory_count": 1,
+            "dag_nodes": 0,
+            "dag_edges": 0,
+        },
+        {
+            "runtime": "dag",
+            "summary": {"count": 2, "avg_ms": 80.0, "p50_ms": 80.0, "min_ms": 70.0, "max_ms": 90.0},
+            "document_count": 2,
+            "memory_count": 1,
+            "dag_nodes": 5,
+            "dag_edges": 4,
+        },
+    ])
+
+    assert "Legacy vs DAG latency benchmark" in text
+    assert "| legacy | 2 | 100.0" in text
+    assert "| dag | 2 | 80.0" in text
+    assert "legacy_avg / dag_avg = 1.25" in text

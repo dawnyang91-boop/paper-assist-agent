@@ -1,0 +1,77 @@
+nodes:
+  planner:
+    role: planner
+    permissions: []
+    allowed_tools: []
+    share_level: sanitized_facts
+
+  rag_retriever:
+    role: retriever
+    permissions: ["read_rag"]
+    allowed_tools: ["qdrant_search"]
+    share_level: cited_evidence
+
+  memory_retriever:
+    role: memory
+    permissions: ["read_session_memory"]
+    allowed_tools: ["memory_read"]
+    share_level: privileged
+
+  web_search:
+    role: external_retriever
+    permissions: ["web_search", "fetch_public_url"]
+    allowed_tools: ["brave_search", "fetch"]
+    share_level: sanitized_facts
+
+  writer:
+    role: writer
+    permissions: ["llm_generate"]
+    allowed_tools: []
+    share_level: no_share
+
+  verifier:
+    role: verifier
+    permissions: ["read_evidence", "verify_answer"]
+    allowed_tools: []
+    share_level: no_share
+
+  memory_writer:
+    role: memory_writer
+    permissions: ["write_memory"]
+    allowed_tools: ["memory_write"]
+    share_level: privileged
+
+edges:
+  planner -> rag_retriever:
+    allow: true
+    max_share_level: sanitized_facts
+
+  planner -> memory_retriever:
+    allow: true
+    max_share_level: sanitized_facts
+
+  rag_retriever -> writer:
+    allow: true
+    require_sanitized: true
+    max_share_level: cited_evidence
+
+  memory_retriever -> writer:
+    allow: true
+    require_sanitized: true
+    max_share_level: privileged
+
+  web_search -> writer:
+    allow: true
+    require_sanitized: true
+    max_share_level: sanitized_facts
+
+  writer -> tool_executor:
+    allow: false
+
+  writer -> memory_writer:
+    allow: true
+    require_verification_passed: true
+
+  security -> verifier:
+    allow: true
+    max_share_level: privileged
