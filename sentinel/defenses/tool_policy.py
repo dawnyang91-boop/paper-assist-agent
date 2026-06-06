@@ -125,6 +125,7 @@ TOOL_REGISTRY: Mapping[str, ToolPolicy] = {
 class ToolPolicyChecker:
     def __init__(self, config: SentinelConfig):
         self.config = config
+        self.security_manager: Any = None
 
     def check(self, tool_name: str, args: Any = None, user_context: Dict[str, Any] | None = None) -> SecurityDecision:
         if not self.config.enabled or not self.config.tool_guard_enabled:
@@ -160,6 +161,9 @@ class ToolPolicyChecker:
         findings.extend(self._check_args(policy, parsed_args))
         findings.extend(self._check_paths(policy, parsed_args))
         findings.extend(self._check_sensitive_arguments(parsed_args))
+        findings.extend(self._check_identity_scope(parsed_args, user_context))
+        findings.extend(self._check_code_execution(tool_name, parsed_args))
+        findings.extend(self._check_confirmation_text(tool_name, parsed_args))
 
         if policy.requires_permission and not self._has_permission(user_context, policy.requires_permission):
             findings.append(self._finding(
@@ -199,7 +203,7 @@ class ToolPolicyChecker:
                 action="require_confirmation",
                 risk_score=finding.confidence,
                 findings=[finding],
-                metadata=metadata,
+                metadata={**metadata, "confirmation_payload": self._confirmation_payload(tool_name, parsed_args, policy, [finding])},
             )
 
         if policy.level == "sensitive_read":
@@ -313,6 +317,45 @@ class ToolPolicyChecker:
                 ))
                 return findings
         return findings
+
+    def _check_identity_scope(self, args: Dict[str, Any], user_context: Dict[str, Any] | None) -> list[SecurityFinding]:
+        manager = self.security_manager
+        if manager is None:
+            return []
+        decision = manager.identity_guard.check_cross_user_access(args, user_context=user_context)
+        return list(decision.findings)
+
+    def _check_code_execution(self, tool_name: str, args: Dict[str, Any]) -> list[SecurityFinding]:
+        manager = self.security_manager
+        if manager is None:
+            return []
+        decision = manager.code_execution_guard.check_tool_args(tool_name, args)
+        return list(decision.findings)
+
+    def _check_confirmation_text(self, tool_name: str, args: Dict[str, Any]) -> list[SecurityFinding]:
+        manager = self.security_manager
+        if manager is None or "confirmation_text" not in args:
+            return []
+        decision = manager.human_trust_guard.check_confirmation_text(
+            {"tool_name": tool_name, "tool_args": args},
+            str(args.get("confirmation_text") or ""),
+        )
+        return list(decision.findings)
+
+    def _confirmation_payload(self, tool_name: str, args: Dict[str, Any], policy: ToolPolicy, findings: list[SecurityFinding]) -> Dict[str, Any]:
+        return {
+            "tool_name": tool_name,
+            "tool_level": policy.level,
+            "exact_target": args.get("path") or args.get("target") or args.get("resource") or args.get("to") or args.get("repo"),
+            "arguments_summary": {str(key): str(value)[:180] for key, value in args.items()},
+            "data_to_read": args.get("path") or args.get("query") or args.get("sql"),
+            "data_to_write": args.get("content") or args.get("body"),
+            "external_recipient": args.get("to") or args.get("url"),
+            "destructive_effect": policy.level in {"write", "external_action"} or any("delete" in finding.evidence.lower() for finding in findings),
+            "source_of_trigger": args.get("source") or "agent_tool_call",
+            "whether_user_explicitly_requested": bool(args.get("user_explicitly_requested")),
+            "risk_explanation": [finding.recommendation for finding in findings],
+        }
 
     def _path_in_allowed_scope(self, raw_path: str, allowed_paths: Iterable[str]) -> bool:
         value = (raw_path or "").strip()

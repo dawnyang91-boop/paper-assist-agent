@@ -402,6 +402,12 @@ class AgentGraph:
             sentinel = state.usage.setdefault("sentinel", self.agent.security_manager.trace_base())
             sentinel["rag_sanitized_count"] = len(decisions)
             sentinel["rag_sanitize_decisions"] = decisions
+            if decisions:
+                taint = sentinel.setdefault("taint_trace", {})
+                taint.setdefault("risky_rag_chunks", []).extend(
+                    item.get("rank") for item in decisions if item.get("rank") is not None
+                )
+                taint["answer_used_risky_context"] = True
         except Exception as exc:
             state.add_error("sentinel.sanitize_rag_context", exc)
 
@@ -623,7 +629,12 @@ class AgentGraph:
         if not self._sentinel_enabled() or not state.answer:
             return
         try:
-            decision = self.agent.security_manager.post_check_output(state.answer)
+            output_decision = self.agent.security_manager.post_check_output(state.answer)
+            cascade_decision = self.agent.security_manager.check_cascade_answer(
+                state.answer,
+                context_trace=self._build_cascade_trace(state),
+            )
+            decision = self.agent.security_manager._merge_decisions([output_decision, cascade_decision])
             sentinel = state.usage.setdefault("sentinel", self.agent.security_manager.trace_base())
             sentinel["output_decision"] = decision.to_dict()
             if decision.sanitized_text and decision.sanitized_text != state.answer:
@@ -642,14 +653,19 @@ class AgentGraph:
             return
         if self._sentinel_enabled():
             try:
-                allowed, decisions = self.agent.security_manager.should_write_memory_interaction(
+                allowed, decisions = self.agent.security_manager.should_write_memory_with_trace(
                     state.question,
                     state.answer,
+                    context_trace=self._build_cascade_trace(state, memory_write_requested=True),
                 )
+                rogue_decision = self.agent.security_manager.check_rogue_trace(self._build_behavior_trace(state, memory_write_requested=True))
+                if rogue_decision.findings:
+                    decisions.append(rogue_decision.to_dict())
+                    allowed = allowed and rogue_decision.allowed
                 sentinel = state.usage.setdefault("sentinel", self.agent.security_manager.trace_base())
                 sentinel.setdefault("memory_write_decisions", []).extend(decisions)
                 if not allowed:
-                    state.add_warning("sentinel.memory_safety", "本轮问答包含疑似安全策略污染内容，已跳过记忆写入。")
+                    state.add_warning("sentinel.memory_safety", "本轮问答包含疑似安全策略污染或级联风险，已跳过记忆写入。")
                     state.writeback_events.append({
                         "type": "memory_safety",
                         "result": {"skipped": True, "decisions": decisions},
@@ -704,6 +720,19 @@ class AgentGraph:
             "resumed_transcript_count": len(state.resumed_transcript),
             "checkpoint_enabled": self.checkpoint_store.enabled,
         })
+        if self._sentinel_enabled():
+            try:
+                behavior_trace = self._build_behavior_trace(state)
+                profile = self.agent.security_manager.update_behavior_profile(state.session_id, behavior_trace)
+                sentinel = state.usage.setdefault("sentinel", self.agent.security_manager.trace_base())
+                sentinel["behavior_profile"] = profile
+                sentinel["session_risk_score"] = profile.get("session_risk_score", 0.0)
+                state.usage["sentinel"] = sentinel
+                if float(profile.get("session_risk_score", 0.0) or 0.0) >= 0.85:
+                    state.add_warning("sentinel.rogue_agent_guard", "当前 session 风险较高，后续自治工具调用应进入人工复核。")
+                    state.usage["warnings"] = list(state.warnings)
+            except Exception as exc:
+                state.add_error("sentinel.behavior_profile", exc)
         if state.answer:
             self.record_transcript(
                 state,
@@ -793,6 +822,11 @@ class AgentGraph:
             if decisions:
                 sentinel = state.usage.setdefault("sentinel", self.agent.security_manager.trace_base())
                 sentinel.setdefault("memory_context_decisions", []).extend(decisions)
+                taint = sentinel.setdefault("taint_trace", {})
+                taint.setdefault("risky_memory_contexts", []).extend(
+                    item.get("index") for item in decisions if item.get("index") is not None
+                )
+                taint["answer_used_risky_context"] = True
                 state.add_warning("sentinel.memory_safety", f"已过滤 {len(decisions)} 条疑似污染记忆上下文。")
             return passthrough + filtered
         except Exception as exc:
@@ -807,11 +841,87 @@ class AgentGraph:
             if decision.findings:
                 sentinel = state.usage.setdefault("sentinel", self.agent.security_manager.trace_base())
                 sentinel.setdefault("tool_output_decisions", []).append(decision.to_dict())
+                taint = sentinel.setdefault("taint_trace", {})
+                taint.setdefault("risky_tool_outputs", []).append(observation.get("role") or observation.get("type") or "tool_output")
+                taint["answer_used_risky_context"] = True
                 state.add_warning("sentinel.tool_output", "MCP 工具输出包含疑似指令注入内容，已净化后再进入上下文。")
             return sanitized
         except Exception as exc:
             state.add_error("sentinel.tool_output_sanitize", exc)
             return observation
+
+    def _build_cascade_trace(self, state: AgentState, memory_write_requested: bool = False) -> Dict[str, Any]:
+        sentinel = state.usage.setdefault("sentinel", self.agent.security_manager.trace_base())
+        taint = dict(sentinel.get("taint_trace") or {})
+        local_assessment = state.usage.get("local_context_assessment") or {}
+        verification = state.verification or {}
+        taint.update({
+            "risky_input": bool((sentinel.get("input_decision") or {}).get("findings")),
+            "local_context_insufficient": bool(
+                local_assessment
+                and not local_assessment.get("has_relevant_local_context", True)
+            ),
+            "general_knowledge_fallback_used": bool(state.usage.get("general_knowledge_fallback_used")),
+            "allow_general_knowledge_fallback": bool(state.usage.get("allow_general_knowledge_fallback")),
+            "repair_attempts": state.repair_attempts,
+            "verification_passed": verification.get("passed"),
+            "memory_write_requested": memory_write_requested,
+            "tool_call_requested": bool(state.tool_call_count or state.usage.get("mcp_tool_call_count")),
+            "low_confidence_count": len([
+                item for item in state.decisions
+                if str(item.get("confidence") or "").lower() in {"low", "weak"}
+            ]),
+        })
+        if sentinel.get("rag_sanitize_decisions"):
+            taint.setdefault("risky_rag_chunks", [])
+        if sentinel.get("tool_output_decisions"):
+            taint.setdefault("risky_tool_outputs", [])
+        if sentinel.get("memory_context_decisions"):
+            taint.setdefault("risky_memory_contexts", [])
+        sentinel["taint_trace"] = taint
+        return taint
+
+    def _build_behavior_trace(self, state: AgentState, memory_write_requested: bool = False) -> Dict[str, Any]:
+        high_risk_tool_names = {
+            "send_email",
+            "deploy_service",
+            "delete_resource",
+            "file_write",
+            "github_write",
+            "run_command",
+            "filesystem",
+            "sqlite",
+        }
+        tool_actions = []
+        for observation in state.tool_observations:
+            role = str(observation.get("role") or "")
+            tool_name = str(observation.get("tool") or observation.get("name") or "")
+            if not tool_name and role.startswith("mcp:"):
+                tool_name = role.split(".")[-1]
+            if tool_name:
+                tool_actions.append({"tool_name": tool_name, "content": observation.get("content", "")})
+        sentinel = state.usage.get("sentinel") or {}
+        blocked_attempts = len([
+            item for item in sentinel.get("tool_decisions", []) or []
+            if not item.get("allowed", True)
+        ])
+        high_risk_count = sum(1 for item in tool_actions if str(item.get("tool_name", "")).lower() in high_risk_tool_names)
+        return {
+            "session_id": state.session_id,
+            "user_goal": state.original_question or state.question,
+            "agent_actions": tool_actions,
+            "tool_calls": tool_actions,
+            "tool_call_count": state.tool_call_count,
+            "high_risk_tool_count": high_risk_count,
+            "blocked_attempts": blocked_attempts,
+            "memory_writes": len(state.writeback_events) + (1 if memory_write_requested else 0),
+            "memory_write_count": len(state.writeback_events) + (1 if memory_write_requested else 0),
+            "external_actions": sum(
+                1 for item in tool_actions
+                if str(item.get("tool_name", "")).lower() in {"send_email", "deploy_service", "github_write", "run_command"}
+            ),
+            "user_context": {"user_explicitly_requested": False, "confirmed": False},
+        }
 
     def _fit_context_budget(self, state: AgentState, context_top_k: Optional[int], max_tokens: int):
         built_context = state.built_context
@@ -950,6 +1060,32 @@ class AgentGraph:
                 )
                 sentinel = state.usage.setdefault("sentinel", self.agent.security_manager.trace_base())
                 sentinel.setdefault("tool_decisions", []).append(decision.to_dict())
+                rogue_decision = self.agent.security_manager.check_rogue_action(
+                    state.question,
+                    {"tool_name": function_name, "tool_args": arguments},
+                    user_context={"session_id": state.session_id},
+                )
+                if rogue_decision.findings:
+                    sentinel.setdefault("rogue_tool_decisions", []).append(rogue_decision.to_dict())
+                    state.add_warning("sentinel.rogue_agent_guard", "工具调用存在目标漂移或自治越权风险。")
+                    decision = self.agent.security_manager._merge_decisions([decision, rogue_decision])
+                if self.agent.security_manager.compute_session_risk_score(state.session_id) >= 0.85:
+                    session_decision = self.agent.security_manager.check_rogue_trace({
+                        "user_goal": state.question,
+                        "tool_call_count": state.tool_call_count + 1,
+                        "high_risk_tool_count": 1,
+                        "agent_actions": [{"tool_name": function_name, "tool_args": arguments}],
+                    })
+                    sentinel.setdefault("rogue_session_decisions", []).append(session_decision.to_dict())
+                    decision = self.agent.security_manager._merge_decisions([decision, session_decision])
+                cascade_decision = self.agent.security_manager.check_cascade_tool_decision(
+                    {"tool_name": function_name, "arguments": arguments},
+                    upstream_risks=sentinel.get("taint_trace", {}),
+                )
+                if cascade_decision.findings:
+                    sentinel.setdefault("cascade_tool_decisions", []).append(cascade_decision.to_dict())
+                    state.add_warning("sentinel.cascade_guard", "工具调用受到上游风险影响，已要求重新确认或阻断。")
+                    decision = self.agent.security_manager._merge_decisions([decision, cascade_decision])
                 if not decision.allowed:
                     blocked_observation = {
                         "role": "sentinel:tool_policy",

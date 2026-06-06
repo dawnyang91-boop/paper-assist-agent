@@ -286,7 +286,8 @@ class MCPManager:
     async def list_tools(self, server_name: str) -> List[Dict[str, Any]]:
         server = self.servers[server_name]
         async with self.client_cls(server, timeout=self.config.mcp_timeout_seconds) as client:
-            return await client.list_tools()
+            tools = await client.list_tools()
+        return self._filter_tool_descriptors(server_name, tools)
 
     async def call_tool(self, server_name: str, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> MCPToolResult:
         server = self.servers[server_name]
@@ -345,6 +346,27 @@ class MCPManager:
                     },
                 })
         return openai_tools
+
+    def _filter_tool_descriptors(self, server_name: str, tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if self.security_manager is None:
+            return tools
+        safe_tools = []
+        for tool in tools:
+            try:
+                decision = self.security_manager.check_tool_descriptor({
+                    **tool,
+                    "server": server_name,
+                })
+            except Exception:
+                safe_tools.append(tool)
+                continue
+            if decision.action in {"block", "quarantine"}:
+                continue
+            safe_tool = dict(tool)
+            if decision.findings:
+                safe_tool.setdefault("_sentinel", {})["descriptor_decision"] = decision.to_dict()
+            safe_tools.append(safe_tool)
+        return safe_tools
 
     def call_openai_tool(self, function_name: str, arguments: Any) -> MCPToolResult:
         return self._run_async(self.call_openai_tool_async(function_name, arguments))

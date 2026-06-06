@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Protocol
 
 from config import AppConfig, get_config
+from sentinel.defenses.security_manager import SecurityManager
 
 
 @dataclass
@@ -40,8 +41,10 @@ class SkillManager:
         self,
         config: Optional[AppConfig] = None,
         skills: Optional[List[Skill]] = None,
+        security_manager: Any = None,
     ):
         self.config = config or get_config()
+        self.security_manager = security_manager or SecurityManager.from_app_config(self.config)
         self.skills = skills if skills is not None else self._load_configured_skills()
 
     def retrieve_context(self, question: str) -> List[Dict[str, Any]]:
@@ -51,7 +54,24 @@ class SkillManager:
                 continue
             result = skill.run(question, context={"config": self.config})
             if result and result.content:
-                memories.append(result.to_memory())
+                content = result.content
+                metadata = dict(result.metadata or {})
+                if self.security_manager is not None:
+                    try:
+                        decision = self.security_manager.check_skill_output(getattr(skill, "name", result.name), content)
+                        if decision.findings:
+                            metadata["supply_chain_decision"] = decision.to_dict()
+                        if decision.action in {"block", "quarantine"}:
+                            continue
+                        content = decision.sanitized_text or content
+                    except Exception:
+                        pass
+                memories.append(SkillResult(
+                    name=result.name,
+                    content=content,
+                    success=result.success,
+                    metadata=metadata,
+                ).to_memory())
         return memories
 
     def list_skills(self) -> List[Dict[str, Any]]:

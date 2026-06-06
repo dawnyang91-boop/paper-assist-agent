@@ -51,4 +51,12 @@ def load_cases(dataset_path: str | Path) -> List[EvalCase]:
         except ImportError as exc:
             raise RuntimeError("Dataset is not JSON and PyYAML is not installed.") from exc
         raw = yaml.safe_load(text)
+    if isinstance(raw, dict) and isinstance(raw.get("includes"), list):
+        cases: List[EvalCase] = []
+        for include in raw["includes"]:
+            include_path = Path(str(include))
+            if not include_path.is_absolute():
+                include_path = path.parent / include_path
+            cases.extend(load_cases(include_path))
+        return cases
     return [EvalCase.from_dict(item) for item in raw or []]
