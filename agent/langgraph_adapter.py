@@ -14,4 +14,8 @@ class LangGraphAgentRunner:
         try:
             from langgraph.graph import END, StateGraph
         except ImportError as exc:
-            raise LangGraphUnavailable("未安装 langgraph
+            raise LangGraphUnavailable("未安装 langgraph；请先安装 langgraph 后再启用该适配器。") from exc
+
+        self.agent_graph = agent_graph
+        self.StateGraph = StateGraph
+        self.END = END
