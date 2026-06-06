@@ -176,7 +176,25 @@ Original user question:
                 enabled=transcript_enabled,
             )
         graph = AgentGraph(agent=self, config=self.config, transcript_store=transcript_store)
-        if self.config.agent_runtime == "langgraph":
+        if self.config.agent_runtime == "dag":
+            state = self._run_dag(
+                question=question,
+                session_id=session_id,
+                memories=memories,
+                include_memory_manager=include_memory_manager,
+                include_mcp=include_mcp,
+                include_skills=include_skills,
+                memory_top_k=memory_top_k,
+                modes=modes,
+                top_k=top_k,
+                per_query_limit=per_query_limit,
+                mqe_count=mqe_count,
+                rerank_top_k=rerank_top_k,
+                context_top_k=context_top_k,
+                write_memory=write_memory,
+                stream_callback=stream_callback,
+            )
+        elif self.config.agent_runtime == "langgraph":
             state = self._run_langgraph(
                 graph=graph,
                 question=question,
@@ -274,6 +292,8 @@ Original user question:
                 "context_tokens": built_context.token_estimate,
                 "answer_generation": state.usage.get("answer_generation", {}),
                 "sentinel": state.usage.get("sentinel", {}),
+                "runtime": state.usage.get("runtime", self.config.agent_runtime),
+                "dag": state.usage.get("dag", {}),
                 "loop_steps": state.usage.get("loop_steps", state.loop_step),
                 "stop_reason": state.stop_reason,
                 "errors": state.errors,
@@ -301,6 +321,19 @@ Original user question:
             return state
         except Exception as exc:
             print(f"[警告] LangGraph 运行失败，已回退到 legacy agent graph：{exc}")
+            return graph.run(**payload)
+
+    def _run_dag(self, **payload: Any):
+        try:
+            from agent_dag.dag_runtime import DAGAgentRuntime
+
+            runner = DAGAgentRuntime(agent=self, config=self.config)
+            return runner.run_sync(payload)
+        except Exception as exc:
+            print(f"[警告] DAG 运行失败，已回退到 legacy agent graph：{exc}")
+            from agent.agent_graph import AgentGraph
+
+            graph = AgentGraph(agent=self, config=self.config)
             return graph.run(**payload)
 
     def _build_memory_context(

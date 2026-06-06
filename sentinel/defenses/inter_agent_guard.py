@@ -45,6 +45,13 @@ class InterAgentGuard:
             "reviewer_agent": "reviewer",
             "writer_agent": "writer",
             "executor": "executor",
+            "rag_agent": "retriever",
+            "memory_agent": "memory",
+            "skill_agent": "skill",
+            "web_agent": "web",
+            "security_agent": "security",
+            "verifier_agent": "verifier",
+            "memory_writer_agent": "memory_writer",
         }
 
     def check_message(self, message: Dict[str, Any] | AgentMessage | None) -> SecurityDecision:

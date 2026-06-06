@@ -13,9 +13,10 @@
 - **候选重排与上下文构建**：结合向量分数、词面重叠、主题重叠、多样性等信号，对候选 chunk 进行重排。
 - **多层记忆系统**：包含 Working Memory、Episodic Memory、Semantic Memory、Sensory Memory，并支持 Redis、Qdrant、Neo4j 等存储增强。
 - **Agent Graph 执行链路**：提供同步 bounded graph runner，支持查询理解、检索、记忆、工具、上下文构建、回答生成、答案校验、记忆写回等节点。
+- **Secure DAG 多智能体运行时**：可通过 `AGENT_RUNTIME=dag` 启用，将 RAG、Memory、Skill、Web Search、安全审计、Writer、Verifier、MemoryWriter 拆成异步 DAG 节点，并通过 Evidence Store 和 EdgeGuard 控制跨节点通信。
 - **MCP 工具扩展**：支持 fetch、SQLite、filesystem、Brave Search 等 MCP 工具，并可通过 OpenAI tool calling 接入 Agent。
 - **本地 Skills 插件**：支持 `senet_explainer`、`paper_deep_summary` 等领域技能，以可插拔方式为回答补充上下文。
-- **LLM-Sentinel 安全模块**：覆盖 Prompt Injection、Jailbreak、RAG Poisoning、Tool Misuse、Memory Injection、Output Leakage 等安全风险。
+- **LLM-Sentinel 安全模块**：覆盖 Prompt Injection、Jailbreak、RAG Poisoning、Tool Misuse、Memory Injection、Output Leakage、Inter-Agent Communication、Cascading Failures、Rogue Agents 等安全风险。
 - **安全评测报告**：内置数据集、mock/chatbot adapter、scorer 和 report writer，可输出 JSON / Markdown 安全评测报告。
 
 ---
@@ -148,7 +149,38 @@ flowchart LR
     I --> J[MemorySafetyChecker]
 ```
 
-### 2.4 Evaluation Pipeline
+### 2.4 Secure DAG Multi-Agent Runtime
+
+```mermaid
+flowchart TD
+    A[User Query] --> B[Sentinel InputGuard]
+    B --> C[PlannerNode]
+    C --> D1[RAGRetrieverNode]
+    C --> D2[MemoryRetrieverNode]
+    C --> D3[SkillNode]
+    C --> D4[WebSearchNode optional]
+    C --> D5[SecurityNode]
+    D1 --> E[EdgeGuard]
+    D2 --> E
+    D3 --> E
+    D4 --> E
+    D5 --> E
+    E --> F[SharedEvidenceStore]
+    F --> G[WriterNode]
+    G --> H[OutputGuard]
+    H --> I[VerifierNode]
+    I --> J[MemoryWriterNode optional]
+    J --> K[Final Answer + DAG Trace]
+```
+
+DAG runtime 的核心约束：
+
+- 每个节点拿到独立 `AgentContext`，避免共享可变 global context。
+- 节点输出必须先经过 `EdgeGuard / InterAgentGuard`，再进入 `SharedEvidenceStore`。
+- `WriterNode` 只能读取 `SANITIZED_FACTS` / `CITED_EVIDENCE`，不能读取 `PRIVILEGED` / `NEVER_SHARE`。
+- RAG、Memory、Skill、Web Search 可并行执行，DAG trace 会记录节点耗时、边级安全决策、blocked messages 和 evidence count。
+
+### 2.5 Evaluation Pipeline
 
 ```mermaid
 flowchart LR
@@ -168,6 +200,7 @@ flowchart LR
 | CLI / 构建入口 | `app/main.py` | 构建 assistant、入库、单轮问答、交互式对话 |
 | 问答 Agent | `agent/qa_agent.py` | RAG QA 主逻辑，连接检索、重排、记忆、工具、Sentinel |
 | Agent 图 | `agent/agent_graph.py` | 同步 Agent 执行链路，包含输入处理、检索、工具、生成、校验、写回 |
+| Secure DAG Runtime | `agent_dag/` | 可选多智能体 DAG 运行时，包含节点编排、上下文隔离、边级安全检查和共享证据池 |
 | 文档转换 | `rag/DocumentConverter.py` | 使用 MarkItDown / PyMuPDF 将多格式文件转为 Markdown |
 | RAG 查询 | `rag/rag_query.py` | Basic / MQE / HyDE 查询生成与 Qdrant 检索 |
 | 上下文构建 | `rag/context_builder.py` | 构建带文档、记忆、工具上下文的最终 prompt |
@@ -193,6 +226,7 @@ flowchart LR
 - Redis
 - Neo4j
 - LangGraph，可选
+- Secure DAG Runtime，自研可选
 - MCP servers：fetch、sqlite 等
 
 ### 前端
@@ -354,6 +388,31 @@ python -m app.main chat --session-id demo --show-trace
 /media xxx  将图片或音频写入感知记忆
 ```
 
+### 8.3 Legacy vs DAG 延迟对比
+
+```bash
+python -m app.main benchmark-runtime \
+  "请总结 OneTrans 的核心贡献" \
+  --session-id bench \
+  --repeat 3 \
+  --warmup 1
+```
+
+输出会给出 legacy 与 DAG runtime 的平均耗时、P50、最小/最大耗时、文档/记忆数量，以及 DAG 节点和边数量。
+
+如果你希望减少外部依赖噪声，可以关闭记忆、MCP 或 Skills：
+
+```bash
+python -m app.main benchmark-runtime \
+  "请解释 SENet 的核心贡献" \
+  --repeat 5 \
+  --no-memory \
+  --no-mcp \
+  --no-skills
+```
+
+该命令不会写入长期记忆，适合做运行时延迟对比。
+
 ---
 
 ## 9. FastAPI 服务
@@ -431,6 +490,16 @@ curl http://127.0.0.1:8000/chatbot/sessions/demo
 13. **答案校验**：检查引用覆盖与本地证据一致性。
 14. **记忆安全写回**：通过 Memory Safety Checker 后写入记忆系统。
 
+运行时可通过 `.env` 切换：
+
+```env
+AGENT_RUNTIME=legacy     # 默认同步 AgentGraph
+AGENT_RUNTIME=langgraph  # 可选 LangGraph adapter
+AGENT_RUNTIME=dag        # Secure DAG 多智能体运行时
+```
+
+DAG runtime 会将本地检索、记忆检索、技能和可选 Web Search 拆成独立节点并行执行；每条节点边都经过 Sentinel 检查，最终 trace 会写入 `QAResult.metadata["dag"]`。
+
 ---
 
 ## 11. LLM-Sentinel 安全模块
@@ -461,6 +530,9 @@ User Input
 | 工具策略 | `sentinel/defenses/tool_policy.py` | 基于工具注册表、参数 schema、路径范围、权限和确认机制控制工具调用 |
 | 工具输出净化 | `sentinel/defenses/tool_output_sanitizer.py` | 将工具返回视为不可信数据，移除工具输出注入 |
 | 记忆安全 | `sentinel/defenses/memory_safety.py` | 防止安全策略污染被写入长期记忆 |
+| 多智能体通信防护 | `sentinel/defenses/inter_agent_guard.py` | 检测伪造 agent 消息、角色伪造、跨 agent prompt injection 和低权限越权请求 |
+| 级联失败防护 | `sentinel/defenses/cascade_guard.py` | 跟踪 RAG / Tool / Memory 风险向答案、工具和长期记忆的传播 |
+| Rogue Agent 防护 | `sentinel/defenses/rogue_agent_guard.py` | 检测目标漂移、过度自治、自修改安全配置、异常工具频率和危险长期目标 |
 | 输出防护 | `sentinel/defenses/output_guard.py` | 检测并脱敏 API key、token、私钥、连接串、PII、隐藏提示词等 |
 | 统一入口 | `sentinel/defenses/security_manager.py` | 封装各类安全检查，供 AgentGraph / QAAgent 调用 |
 | 评测器 | `sentinel/evaluators/` | 加载数据集、运行目标 adapter、打分并生成报告 |
@@ -474,6 +546,9 @@ sentinel/datasets/prompt_injection.yaml
 sentinel/datasets/jailbreak.yaml
 sentinel/datasets/rag_poisoning.yaml
 sentinel/datasets/tool_misuse.yaml
+sentinel/datasets/inter_agent_communication.yaml
+sentinel/datasets/cascading_failures.yaml
+sentinel/datasets/rogue_agent.yaml
 ```
 
 覆盖类型包括：
@@ -515,6 +590,25 @@ Tool Misuse:
 - external action
 - argument injection
 - tool chain escalation
+
+Inter-Agent Communication:
+- spoofed agent message
+- forged role channel
+- cross-agent prompt injection
+- unauthorized agent request
+
+Cascading Failures:
+- poisoned RAG to answer to memory
+- bad tool output to decision
+- failed online search overtrust
+- unsafe cross-session memory reuse
+
+Rogue Agents:
+- goal drift
+- excessive autonomy
+- self modification
+- repeated policy violation
+- autonomous data collection
 ```
 
 ---
@@ -554,6 +648,9 @@ python sentinel/scripts/run_sentinel_eval.py \
 python sentinel/scripts/run_sentinel_eval.py --target chatbot --dataset jailbreak --base-url http://127.0.0.1:8000/chatbot --output sentinel/reports/chatbot_prompt_jailbreak_judged
 python sentinel/scripts/run_sentinel_eval.py --target chatbot --dataset rag_poisoning --base-url http://127.0.0.1:8000/chatbot --output sentinel/reports/chatbot_rag_poisoning_judged
 python sentinel/scripts/run_sentinel_eval.py --target chatbot --dataset tool_misuse --base-url http://127.0.0.1:8000/chatbot --output sentinel/reports/chatbot_tool_misuse_judged
+python sentinel/scripts/run_sentinel_eval.py --target chatbot --dataset inter_agent_communication --base-url http://127.0.0.1:8000/chatbot --output sentinel/reports/chatbot_asi07_inter_agent
+python sentinel/scripts/run_sentinel_eval.py --target chatbot --dataset cascading_failures --base-url http://127.0.0.1:8000/chatbot --output sentinel/reports/chatbot_asi08_cascading
+python sentinel/scripts/run_sentinel_eval.py --target chatbot --dataset rogue_agent --base-url http://127.0.0.1:8000/chatbot --output sentinel/reports/chatbot_asi10_rogue
 ```
 
 输出文件：
@@ -575,6 +672,9 @@ sentinel/reports/*.md
 | Jailbreak | 80.95 | medium | 14 / 21 | 隐晦英文越狱、多轮绕过、翻译绕过和安全教育误杀仍需优化 |
 | RAG Poisoning | 85.64 | low | 18 / 22 | 显式 RAG 指令污染防护有效，事实污染、metadata 污染、chunk 边界注入仍需增强 |
 | Tool Misuse | 84.55 | medium | 15 / 22 | 工具注册表已成型，但自然语言工具滥用意图、外部动作和工具链升级评测仍需完善 |
+| Inter-Agent Communication | 可运行 | - | - | 检测伪造 agent 消息、角色伪造、跨 agent 注入与低权限越权请求 |
+| Cascading Failures | 可运行 | - | - | 检测污染 RAG/tool/memory 向答案和长期记忆的级联传播 |
+| Rogue Agents | 可运行 | - | - | 检测目标漂移、过度自治、自修改安全配置和异常工具频率 |
 
 这些分数表示：
 
@@ -647,6 +747,13 @@ SENTINEL_OUTPUT_GUARD_ENABLED=true
 │   ├── answer_verifier.py         # 答案引用与质量校验
 │   ├── checkpoint_store.py        # Agent checkpoint 持久化
 │   └── langgraph_adapter.py       # 可选 LangGraph 适配器
+├── agent_dag/
+│   ├── dag_runtime.py             # Secure DAG 多智能体运行时
+│   ├── dag_context.py             # 节点上下文隔离与权限过滤
+│   ├── evidence_store.py          # SharedEvidenceStore 共享证据池
+│   ├── edge_guard.py              # 边级安全检查与证据写入
+│   ├── trace.py                   # DAG 节点/边/taint trace
+│   └── nodes/                     # Planner/RAG/Memory/Skill/Web/Writer/Verifier/MemoryWriter
 ├── rag/
 │   ├── rag_query.py               # RAG 查询生成与向量检索
 │   ├── reranker.py                # 候选重排
@@ -681,6 +788,8 @@ SENTINEL_OUTPUT_GUARD_ENABLED=true
 │   ├── detectors/                 # 规则检测器 / LLM Judge
 │   ├── defenses/                  # 输入、RAG、工具、记忆、输出防护
 │   ├── evaluators/                # 评测运行、打分、报告
+│   ├── runtime/                   # behavior profile / evidence policy
+│   ├── configs/                   # DAG policy 示例配置
 │   ├── reports/                   # 评测报告
 │   └── scripts/                   # 测试和评测脚本
 ├── deploy/
@@ -713,6 +822,10 @@ python -m sentinel.scripts.run_sentinel_eval --target mock --dataset tool_misuse
 | `attack_type_scores` | 按 direct / indirect / role_play / metadata_pollution / external_action 等攻击类型聚合 |
 | `failure_analysis` | 失败攻击类型、假阳性、假阴性、高置信失败 |
 | `comparison` | baseline / with_sentinel / with_sentinel_and_llm_judge 对比指标 |
+| `dag_execution_summary` | DAG trace 聚合：节点、边、耗时、证据数量 |
+| `dag_inter_agent_security` | blocked messages、sanitize edge 等多智能体通信安全结果 |
+| `dag_context_isolation` | Writer 是否收到 privileged / never_share 证据 |
+| `dag_taint_propagation` | taint label 计数和高风险传播路径 |
 
 示例展示表：
 
@@ -735,6 +848,9 @@ python -m app.main ask "请总结 OneTrans 的核心贡献"
 # CLI 对话
 python -m app.main chat --session-id demo
 
+# 对比 legacy vs DAG runtime 延迟
+python -m app.main benchmark-runtime "请总结 OneTrans 的核心贡献" --repeat 3 --warmup 1
+
 # 启动 API
 python -m uvicorn app.api:app --host 0.0.0.0 --port 8000
 
@@ -747,6 +863,11 @@ cd web && npm run dev
 # Sentinel mock eval
 python -m sentinel.scripts.run_sentinel_eval --target mock --dataset tool_misuse --output sentinel/reports/tool_misuse_report
 
+# 多智能体安全评测
+python -m sentinel.scripts.run_sentinel_eval --target mock --dataset inter_agent_communication --output sentinel/reports/inter_agent_report
+python -m sentinel.scripts.run_sentinel_eval --target mock --dataset cascading_failures --output sentinel/reports/cascading_report
+python -m sentinel.scripts.run_sentinel_eval --target mock --dataset rogue_agent --output sentinel/reports/rogue_agent_report
+
 # Docker 一键本地启动 API + Qdrant + Redis
 docker compose -f deploy/docker-compose.yml up --build
 
@@ -758,15 +879,16 @@ docker compose -f deploy/docker-compose.yml --profile frontend up --build
 
 **Paper Assist Agent / 私域论文问答与 LLM-Sentinel 安全平台**
 
-基于 FastAPI + React + Qdrant + Redis + Neo4j 构建私域论文问答 Agent，支持本地文档上传、Markdown 转换、向量化入库、Basic/MQE/HyDE 多路检索、重排、上下文组装、长期记忆和 MCP 工具调用。设计并实现 LLM-Sentinel 安全中间件，覆盖 Prompt Injection、Jailbreak、RAG Poisoning、Tool Misuse、Memory Injection 与输出泄露检测；通过 ToolPolicyChecker、ToolOutputSanitizer、RAG trust/risk/penalty、MemorySafetyChecker 和 OutputGuard 对 Agent 全链路进行防护。内置结构化安全评测数据集、自动评分器和 Markdown/JSON 报告，支持 CI/CD 中自动运行安全回归测试。
+基于 FastAPI + React + Qdrant + Redis + Neo4j 构建私域论文问答 Agent，支持本地文档上传、Markdown 转换、向量化入库、Basic/MQE/HyDE 多路检索、重排、上下文组装、长期记忆和 MCP 工具调用。设计并实现 Secure DAG 多智能体运行时，将 RAG、Memory、Skill、Web Search、安全审计、Writer、Verifier、MemoryWriter 拆分为可并行 DAG 节点，并通过上下文隔离、共享证据池和边级安全检查控制跨节点通信。设计并实现 LLM-Sentinel 安全中间件，覆盖 Prompt Injection、Jailbreak、RAG Poisoning、Tool Misuse、Memory Injection、Inter-Agent Communication、Cascading Failures、Rogue Agents 与输出泄露检测；通过 ToolPolicyChecker、ToolOutputSanitizer、InterAgentGuard、CascadeGuard、RogueAgentGuard、MemorySafetyChecker 和 OutputGuard 对 Agent 全链路进行防护。内置结构化安全评测数据集、自动评分器和 Markdown/JSON 报告，支持 CI/CD 中自动运行安全回归测试。
 
 可突出能力：
 
 - RAG + Agent + MCP + Skills 的完整私域问答链路；
 - Working / Episodic / Semantic / Sensory 多层记忆管理；
 - Redis 缓存、任务状态、锁与工作记忆热存储；
+- Secure DAG 多智能体 runtime、上下文隔离与边级安全检查；
 - Qdrant 向量检索与 source trust / retrieval penalty 安全重排；
-- LLM-Sentinel 安全评测平台与自动化报告；
+- LLM-Sentinel 安全评测平台与自动化报告，覆盖 ASI07 / ASI08 / ASI10；
 - Docker Compose 与 GitHub Actions 自动化部署/评测流水线。
 
 ---
