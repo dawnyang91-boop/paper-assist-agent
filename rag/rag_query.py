@@ -4,7 +4,9 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from config import AppConfig, get_config
+from rag.bm25_index import BM25ChunkIndex, BM25SearchResult
 from rag.embedding_service import EmbeddingService
+from rag.query_entity import QueryEntityExtractor
 from storage.redis_cache import RedisJsonCache
 from storage.redis_runtime import RedisUnavailable
 
@@ -234,6 +236,9 @@ class RAGQueryEngine:
         self.collection_name = collection_name or self.config.rag_collection_name
         self.embedding_service = embedding_service or EmbeddingService(config=self.config)
         self.query_generator = query_generator or QueryGenerator(config=self.config)
+        self.entity_extractor = QueryEntityExtractor()
+        self.bm25_index = self._load_bm25_index()
+        self.last_retrieval_diagnostics: Dict[str, Any] = {}
 
     def generate_query_vectors(
         self,
@@ -258,17 +263,39 @@ class RAGQueryEngine:
     ) -> List[RetrievedChunk]:
         top_k = top_k or self.config.rag_query_top_k
         per_query_limit = per_query_limit or self.config.rag_query_per_query_limit or max(top_k, 5)
+        entity_profile = self.entity_extractor.extract(question)
         variants = self.generate_query_vectors(question, modes=modes, mqe_count=mqe_count)
 
-        candidates = []
+        vector_candidates = []
         for variant in variants:
             if variant.vector is None:
                 continue
             hits = self._vector_search(variant.vector, limit=per_query_limit)
             for hit in hits:
-                candidates.append(self._to_retrieved_chunk(hit, variant))
+                vector_candidates.append(self._to_retrieved_chunk(hit, variant))
 
-        return self.dedupe_results(candidates)[:top_k]
+        bm25_candidates = self._bm25_search(question, entity_profile=entity_profile)
+        candidate_limit = top_k
+        if self.bm25_index is not None:
+            candidate_limit = max(top_k, self.config.rag_hybrid_candidate_k)
+
+        deduped = self.dedupe_results([*vector_candidates, *bm25_candidates])
+        entity_coverage = self.entity_extractor.coverage(question, deduped)
+        self.last_retrieval_diagnostics = {
+            "bm25_enabled": bool(self.config.rag_bm25_enabled),
+            "bm25_index_loaded": self.bm25_index is not None,
+            "bm25_index_path": self.config.rag_bm25_index_path,
+            "entity_profile": entity_profile.to_dict(),
+            "entity_coverage": entity_coverage.to_dict(),
+            "vector_candidate_count": len(vector_candidates),
+            "bm25_candidate_count": len(bm25_candidates),
+            "hybrid_candidate_count": len(deduped),
+            "hybrid_hit_count": sum(1 for item in deduped if item.payload.get("_hybrid_hit")),
+            "top_vector_sources": self._source_summary(vector_candidates),
+            "top_bm25_sources": self._source_summary(bm25_candidates),
+        }
+
+        return deduped[:candidate_limit]
 
     def _vector_search(self, query_vector: List[float], limit: int):
         if hasattr(self.qdrant, "search"):
@@ -300,8 +327,14 @@ class RAGQueryEngine:
                 deduped[key] = chunk
                 continue
 
+            existing_modes = {hit.get("query_mode") for hit in existing.source_hits}
+            incoming_modes = {hit.get("query_mode") for hit in chunk.source_hits}
             existing.source_hits.extend(chunk.source_hits)
+            self._merge_payload_scores(existing.payload, chunk.payload)
+            existing.payload["_hybrid_hit"] = self._is_hybrid_modes(existing_modes | incoming_modes)
             if chunk.score > existing.score:
+                self._merge_payload_scores(chunk.payload, existing.payload)
+                chunk.payload["_hybrid_hit"] = existing.payload.get("_hybrid_hit", False)
                 chunk.source_hits = existing.source_hits
                 deduped[key] = chunk
 
@@ -309,11 +342,13 @@ class RAGQueryEngine:
 
     def _to_retrieved_chunk(self, hit: Any, variant: QueryVariant) -> RetrievedChunk:
         payload = dict(getattr(hit, "payload", {}) or {})
+        score = float(getattr(hit, "score", 0.0))
+        payload["_vector_score"] = max(float(payload.get("_vector_score", 0.0) or 0.0), score)
         return RetrievedChunk(
             id=getattr(hit, "id", None),
-            score=float(getattr(hit, "score", 0.0)),
+            score=score,
             payload=payload,
-            query_mode=variant.mode,
+            query_mode=f"vector_{variant.mode}",
             query_text=variant.text,
         )
 
@@ -327,3 +362,72 @@ class RAGQueryEngine:
         if normalized:
             return f"content:{normalized}"
         return f"id:{chunk.id}"
+
+    def _load_bm25_index(self) -> Optional[BM25ChunkIndex]:
+        if not self.config.rag_bm25_enabled:
+            return None
+        try:
+            return BM25ChunkIndex.load(self.config.rag_bm25_index_path)
+        except Exception:
+            return None
+
+    def _bm25_search(self, question: str, entity_profile: Any) -> List[RetrievedChunk]:
+        if not self.config.rag_bm25_enabled or self.bm25_index is None:
+            return []
+        limit = (
+            self.config.rag_bm25_strong_entity_top_k
+            if getattr(entity_profile, "has_strong_entity", False)
+            else self.config.rag_bm25_top_k
+        )
+        results = self.bm25_index.search(question, top_k=limit)
+        if not results:
+            return []
+        max_score = max((item.score for item in results), default=0.0) or 1.0
+        chunks = []
+        for item in results:
+            chunks.append(self._to_bm25_chunk(item, question=question, max_score=max_score))
+        return chunks
+
+    def _to_bm25_chunk(self, result: BM25SearchResult, question: str, max_score: float) -> RetrievedChunk:
+        normalized_score = result.score / max_score if max_score else 0.0
+        payload = dict(result.document.payload or {})
+        payload.setdefault("page_content", result.document.content)
+        payload.setdefault("content", result.document.content)
+        payload.setdefault("source_file", result.document.source_file)
+        payload.setdefault("chunk_index", result.document.chunk_index)
+        payload["_bm25_score"] = max(float(payload.get("_bm25_score", 0.0) or 0.0), normalized_score)
+        return RetrievedChunk(
+            id=result.document.doc_id,
+            score=normalized_score,
+            payload=payload,
+            query_mode="bm25",
+            query_text=question,
+            source_hits=[{
+                "id": result.document.doc_id,
+                "score": result.score,
+                "normalized_score": normalized_score,
+                "query_mode": "bm25",
+                "query_text": question,
+            }],
+        )
+
+    def _merge_payload_scores(self, target: Dict[str, Any], source: Dict[str, Any]) -> None:
+        for key in ("_vector_score", "_bm25_score"):
+            target[key] = max(float(target.get(key, 0.0) or 0.0), float(source.get(key, 0.0) or 0.0))
+
+    def _is_hybrid_modes(self, modes: set) -> bool:
+        has_bm25 = "bm25" in modes
+        has_vector = any(str(mode or "").startswith("vector_") for mode in modes)
+        return has_bm25 and has_vector
+
+    def _source_summary(self, chunks: Iterable[RetrievedChunk], limit: int = 5) -> List[Dict[str, Any]]:
+        summary = []
+        for chunk in list(chunks)[:limit]:
+            payload = chunk.payload or {}
+            summary.append({
+                "source_file": payload.get("source_file") or payload.get("file_name"),
+                "chunk_index": payload.get("chunk_index"),
+                "score": chunk.score,
+                "query_mode": chunk.query_mode,
+            })
+        return summary

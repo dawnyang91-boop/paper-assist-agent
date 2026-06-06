@@ -1,5 +1,6 @@
 import os
 import hashlib
+import re
 import time
 import uuid
 from typing import List, Dict, Optional
@@ -316,6 +317,57 @@ def _content_hash_exists(qdrant, collection_name: str, content_hash: str) -> boo
         return False
 
 
+def _extract_chunk_metadata(content: str, source_file: Optional[str]) -> Dict:
+    file_name = os.path.basename(source_file) if source_file else None
+    title = _extract_title(content, file_name)
+    metadata_text = "\n".join(item for item in [file_name or "", title or "", content[:2000]] if item)
+    acronyms = _unique_ordered(re.findall(r"\b[A-Z][A-Z0-9_-]{2,}\b", metadata_text))
+    model_names = _unique_ordered(
+        acronyms
+        + re.findall(r"\b[A-Z][a-z]+(?:[A-Z][A-Za-z0-9]+)+(?:[-_][A-Za-z0-9]+)?\b", metadata_text)
+        + re.findall(r"\b[A-Za-z]+(?:-[A-Za-z0-9]+)+\b", metadata_text)
+    )
+    keywords = _unique_ordered([
+        *acronyms,
+        *model_names,
+        *re.findall(r"[A-Za-z][A-Za-z0-9_.+-]{2,}", os.path.splitext(file_name or "")[0]),
+    ])[:20]
+    return {
+        "file_name": file_name,
+        "paper_title": title,
+        "acronyms": acronyms[:20],
+        "model_names": model_names[:20],
+        "keywords": keywords,
+    }
+
+
+def _extract_title(content: str, file_name: Optional[str]) -> Optional[str]:
+    for line in (content or "").splitlines()[:20]:
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            return stripped.lstrip("#").strip() or None
+        if 8 <= len(stripped) <= 160 and not stripped.startswith(("-", "|")):
+            return stripped
+    if file_name:
+        return os.path.splitext(file_name)[0].replace("_", " ").replace("-", " ").strip() or None
+    return None
+
+
+def _unique_ordered(items: List[str]) -> List[str]:
+    seen = set()
+    result = []
+    for item in items:
+        cleaned = (item or "").strip()
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(cleaned)
+    return result
+
+
 def _embed_with_retry(client, embed_kwargs: Dict, max_try: int, wait_seconds: float, backoff: float):
     max_try = max(1, int(max_try or 1))
     wait_seconds = max(0.0, float(wait_seconds or 0.0))
@@ -342,7 +394,7 @@ def build_chunk_payload(chunk: Dict, chunk_index: int, source_file: Optional[str
     content = chunk["content"]
     file_type = os.path.splitext(source_file)[1].lower() if source_file else None
     content_hash = _content_hash(content)
-    return {
+    payload = {
         "page_content": content,
         "content": content,
         "tokens": chunk.get("tokens"),
@@ -355,6 +407,8 @@ def build_chunk_payload(chunk: Dict, chunk_index: int, source_file: Optional[str
         "content_hash": content_hash,
         "created_at": time.time(),
     }
+    payload.update(_extract_chunk_metadata(content, source_file))
+    return payload
 
 
 def store_chunks_to_qdrant(

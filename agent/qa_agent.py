@@ -279,6 +279,8 @@ Original user question:
                 "document_count": len(built_context.documents),
                 "memory_count": len(counted_memories),
                 "general_knowledge_context_count": len(general_knowledge_contexts),
+                "retrieval_diagnostics": state.usage.get("retrieval_diagnostics", {}),
+                "entity_coverage": state.usage.get("entity_coverage", {}),
                 "memory_retrieval_diagnostics": state.usage.get("memory_retrieval_diagnostics", {}),
                 "local_context_assessment": state.usage.get("local_context_assessment", {}),
                 "online_search_fallback": state.usage.get("online_search_fallback", False),

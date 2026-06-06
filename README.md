@@ -9,8 +9,8 @@
 ## 1. 项目亮点
 
 - **私域论文 / 文档问答**：支持将 PDF、DOCX、PPTX、HTML、CSV、Markdown、代码、图片等文件转换为 Markdown，并写入 Qdrant 向量库。
-- **多路 RAG 检索**：支持 Basic、MQE（Multi-Query Expansion）和 HyDE 查询模式，提升复杂问题召回率。
-- **候选重排与上下文构建**：结合向量分数、词面重叠、主题重叠、多样性等信号，对候选 chunk 进行重排。
+- **Hybrid RAG 检索**：支持 Basic、MQE（Multi-Query Expansion）、HyDE 向量检索，并可叠加 BM25 关键词检索，强化论文名、模型名、缩写等强实体召回。
+- **实体感知重排与上下文构建**：结合向量分数、BM25 分数、实体覆盖、词面重叠、主题重叠、多样性等信号，对候选 chunk 进行重排。
 - **多层记忆系统**：包含 Working Memory、Episodic Memory、Semantic Memory、Sensory Memory，并支持 Redis、Qdrant、Neo4j 等存储增强。
 - **Agent Graph 执行链路**：提供同步 bounded graph runner，支持查询理解、检索、记忆、工具、上下文构建、回答生成、答案校验、记忆写回等节点。
 - **Secure DAG 多智能体运行时**：可通过 `AGENT_RUNTIME=dag` 启用，将 RAG、Memory、Skill、Web Search、安全审计、Writer、Verifier、MemoryWriter 拆成异步 DAG 节点，并通过 Evidence Store 和 EdgeGuard 控制跨节点通信。
@@ -65,8 +65,11 @@ flowchart LR
     C2 --> D
     C3 --> D
     D --> E[Qdrant Search]
-    E --> F[Deduplicate]
-    F --> G[Candidate Reranker]
+    B --> K[Query Entity Extractor]
+    K --> L[BM25 Search]
+    E --> F[Hybrid Deduplicate]
+    L --> F
+    F --> G[Entity-aware Candidate Reranker]
     G --> H[LLM-Sentinel RAG Sanitizer]
     H --> I[Trust / Risk / Retrieval Penalty]
     I --> J[Context Builder]
@@ -481,8 +484,8 @@ curl http://127.0.0.1:8000/chatbot/sessions/demo
 2. **问题归一化**：将用户问题归一化为适合英文向量检索的问题，同时要求最终用中文回答。
 3. **查询理解**：区分简单事实问题、解释型问题、复杂综合问题。
 4. **多查询生成**：根据问题启用 Basic、MQE、HyDE。
-5. **Qdrant 检索**：生成向量并召回候选 chunk。
-6. **候选重排**：综合向量分数、词面重叠、主题重叠、多样性等进行排序。
+5. **Hybrid 检索**：生成向量并召回 Qdrant 候选；如果已构建 BM25 索引，同时进行关键词检索并合并候选。
+6. **实体感知重排**：综合向量分数、BM25 分数、强实体覆盖、词面重叠、主题重叠、多样性等进行排序。
 7. **RAG 安全净化**：移除检索内容中的指令污染、伪系统提示、引用污染等风险内容。
 8. **记忆检索**：召回 working、episodic、semantic、sensory memory。
 9. **Skill / MCP 扩展**：根据问题激活本地技能或工具上下文。
@@ -843,6 +846,9 @@ python -m sentinel.scripts.run_sentinel_eval --target mock --dataset tool_misuse
 ```bash
 # 文档入库
 python -m app.main ingest --data-dir ./test_files
+
+# 重建 BM25 关键词索引，建议在完成文档入库后执行
+python scripts/rebuild_bm25_index.py
 
 # CLI 单轮问答
 python -m app.main ask "请总结 OneTrans 的核心贡献"

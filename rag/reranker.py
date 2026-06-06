@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Iterable, List, Optional, Set
 
 from config import AppConfig, get_config
+from rag.query_entity import QueryEntityExtractor
 from rag.rag_query import RetrievedChunk
 
 
@@ -33,6 +34,10 @@ class RankedChunk:
     lexical_score: float
     diversity_score: float
     mode_score: float
+    bm25_score: float = 0.0
+    entity_score: float = 0.0
+    hybrid_bonus: float = 0.0
+    entity_missing_penalty: float = 0.0
     rank: int = 0
 
     @property
@@ -110,6 +115,7 @@ class CandidateReranker:
 
     def __init__(self, config: Optional[AppConfig] = None):
         self.config = config or get_config()
+        self.entity_extractor = QueryEntityExtractor()
 
     def rerank(
         self,
@@ -118,17 +124,33 @@ class CandidateReranker:
         top_k: Optional[int] = None,
     ) -> List[RankedChunk]:
         top_k = top_k or self.config.rag_rerank_top_k
+        entity_profile = self.entity_extractor.extract(question)
         ranked = []
         for chunk in candidates:
             retrieval_score = _normalize_score(chunk.score)
             lexical_score = lexical_overlap(question, chunk.content)
             diversity_score = min(len(chunk.source_hits), 4) / 4.0
             mode_score = self._mode_score(chunk)
+            bm25_score = self._bm25_score(chunk)
+            entity_score = self._entity_score(chunk, entity_profile.entities)
+            hybrid_bonus = self.config.rag_rerank_hybrid_bonus if self._is_hybrid(chunk) else 0.0
+            entity_missing_penalty = 0.0
+            if (
+                self.config.rag_entity_aware_enabled
+                and self.config.rag_entity_required_for_strong_query
+                and entity_profile.has_strong_entity
+                and entity_score <= 0.0
+            ):
+                entity_missing_penalty = self.config.rag_rerank_entity_missing_penalty
             final_score = (
                 retrieval_score * self.config.rag_rerank_vector_weight
                 + lexical_score * self.config.rag_rerank_lexical_weight
                 + diversity_score * self.config.rag_rerank_diversity_weight
                 + mode_score * self.config.rag_rerank_mode_weight
+                + bm25_score * self.config.rag_rerank_bm25_weight
+                + entity_score * self.config.rag_rerank_entity_weight
+                + hybrid_bonus
+                - entity_missing_penalty
             )
             ranked.append(RankedChunk(
                 chunk=chunk,
@@ -137,6 +159,10 @@ class CandidateReranker:
                 lexical_score=lexical_score,
                 diversity_score=diversity_score,
                 mode_score=mode_score,
+                bm25_score=bm25_score,
+                entity_score=entity_score,
+                hybrid_bonus=hybrid_bonus,
+                entity_missing_penalty=entity_missing_penalty,
             ))
 
         ranked.sort(key=lambda item: item.rerank_score, reverse=True)
@@ -146,5 +172,34 @@ class CandidateReranker:
 
     def _mode_score(self, chunk: RetrievedChunk) -> float:
         modes = [hit.get("query_mode") for hit in chunk.source_hits] or [chunk.query_mode]
+        modes = [str(mode).replace("vector_", "") for mode in modes if mode]
         scores = [MODE_WEIGHTS.get(mode, 0.85) for mode in modes if mode]
         return max(scores) if scores else 0.85
+
+    def _bm25_score(self, chunk: RetrievedChunk) -> float:
+        payload_score = float((chunk.payload or {}).get("_bm25_score", 0.0) or 0.0)
+        hit_scores = [
+            float(hit.get("normalized_score", 0.0) or 0.0)
+            for hit in chunk.source_hits
+            if hit.get("query_mode") == "bm25"
+        ]
+        return max([payload_score, *hit_scores], default=0.0)
+
+    def _entity_score(self, chunk: RetrievedChunk, entities: List[str]) -> float:
+        if not entities or not self.config.rag_entity_aware_enabled:
+            return 0.0
+        payload = chunk.payload or {}
+        haystack = "\n".join([
+            chunk.content or "",
+            *(str(value) for value in payload.values() if value is not None),
+        ]).lower()
+        covered = sum(1 for entity in entities if entity.lower() in haystack)
+        return covered / len(entities) if entities else 0.0
+
+    def _is_hybrid(self, chunk: RetrievedChunk) -> bool:
+        if (chunk.payload or {}).get("_hybrid_hit"):
+            return True
+        modes = {hit.get("query_mode") for hit in chunk.source_hits}
+        has_bm25 = "bm25" in modes
+        has_vector = any(str(mode or "").startswith("vector_") for mode in modes)
+        return has_bm25 and has_vector
