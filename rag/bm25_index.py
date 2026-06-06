@@ -191,13 +191,19 @@ class BM25ChunkIndex:
         query_tokens = self.tokenize(query)
         if not query_tokens:
             return []
+        query_token_set = set(query_tokens)
         scores = list(self.bm25.get_scores(query_tokens))
         ranked = sorted(enumerate(scores), key=lambda item: item[1], reverse=True)
-        return [
-            BM25SearchResult(document=self.documents[index], score=float(score))
-            for index, score in ranked[:top_k]
-            if score > 0
-        ]
+        results: List[BM25SearchResult] = []
+        for index, score in ranked[:top_k]:
+            numeric_score = float(score)
+            if numeric_score <= 0:
+                overlap = query_token_set.intersection(self.tokenized_corpus[index])
+                if not overlap:
+                    continue
+                numeric_score = 1e-6
+            results.append(BM25SearchResult(document=self.documents[index], score=numeric_score))
+        return results
 
     @staticmethod
     def tokenize(text: str) -> List[str]:
