@@ -13,4 +13,5 @@ class LangGraphAgentRunner:
     def __init__(self, agent_graph: Any):
         try:
             from langgraph.graph import END, StateGraph
-        except ImportError as exc
+        except ImportError as exc:
+            raise LangGraphUnavailable("未安装 langgraph
