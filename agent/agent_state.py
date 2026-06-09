@@ -50,6 +50,7 @@ class AgentState:
     usage: Dict[str, Any] = field(default_factory=dict)
     decisions: List[Dict[str, Any]] = field(default_factory=list)
     resumed_transcript: List[Dict[str, Any]] = field(default_factory=list)
+    active_source_refs: List[Dict[str, Any]] = field(default_factory=list)
     stop_reason: str = ""
     command_result: Optional[str] = None
     media_path: Optional[str] = None

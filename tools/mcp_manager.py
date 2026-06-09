@@ -420,15 +420,29 @@ class MCPManager:
 
     def _run_async(self, coro):
         try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
             return asyncio.run(coro)
-        except RuntimeError as exc:
-            if "asyncio.run() cannot be called" not in str(exc):
-                raise
-            loop = asyncio.new_event_loop()
-            try:
-                return loop.run_until_complete(coro)
-            finally:
-                loop.close()
+
+        if running_loop.is_running():
+            import threading
+
+            result_box: Dict[str, Any] = {}
+
+            def runner() -> None:
+                try:
+                    result_box["result"] = asyncio.run(coro)
+                except Exception as exc:
+                    result_box["error"] = exc
+
+            thread = threading.Thread(target=runner, daemon=True)
+            thread.start()
+            thread.join()
+            if "error" in result_box:
+                raise result_box["error"]
+            return result_box.get("result")
+
+        return running_loop.run_until_complete(coro)
 
     def _openai_function_name(self, server_name: str, tool_name: str) -> str:
         raw_name = f"mcp__{server_name}__{tool_name}"

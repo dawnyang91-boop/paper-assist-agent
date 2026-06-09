@@ -184,6 +184,7 @@ class MemoryManager:
         answer: str,
         session_id: Optional[str] = None,
         min_importance: Optional[int] = None,
+        provenance: Optional[Dict[str, Any]] = None,
     ) -> FactWriteResult:
         """Extract high-value facts from a QA pair and persist them into semantic memory/Neo4j."""
         if is_polluted_context(answer):
@@ -206,7 +207,12 @@ class MemoryManager:
                 continue
             accepted.append(fact)
             try:
-                semantic_id = self.write_semantic_fact(fact, session_id=session_id, importance=importance)
+                semantic_id = self.write_semantic_fact(
+                    fact,
+                    session_id=session_id,
+                    importance=importance,
+                    provenance=provenance,
+                )
             except Exception as exc:
                 errors.append(f"写入语义记忆失败：{exc}")
                 semantic_id = None
@@ -242,6 +248,7 @@ class MemoryManager:
         fact: str,
         session_id: Optional[str] = None,
         importance: int = 7,
+        provenance: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         if self.semantic_memory is None or not fact.strip():
             return None
@@ -262,6 +269,7 @@ class MemoryManager:
             "memory_type": "semantic_fact",
             "session_id": session_id,
             "importance": clamp_importance(importance),
+            "provenance": provenance or {},
             "content_hash": self._content_hash(fact),
             "created_at": time.time(),
         }

@@ -51,6 +51,11 @@ class RAGRetrieverNode(DAGNode):
             top_k=context.privileged_context.get("top_k"),
             per_query_limit=context.privileged_context.get("per_query_limit"),
             mqe_count=context.privileged_context.get("mqe_count"),
+            source_file_hints=context.privileged_context.get("active_source_files", []),
+            provenance_refs=context.privileged_context.get("active_source_refs", []),
+        )
+        context.privileged_context["rag_active_source_ref_count"] = len(
+            context.privileged_context.get("active_source_refs", []) or []
         )
         retrieval_diagnostics = getattr(agent.query_engine, "last_retrieval_diagnostics", {})
         ranked = agent.reranker.rerank(
@@ -134,10 +139,10 @@ class WebSearchNode(DAGNode):
         agent = context.privileged_context["agent"]
         if agent.mcp_manager is None:
             return {"web_contexts": [], "content": "No MCP manager configured."}
-        if hasattr(agent.mcp_manager, "retrieve_online_context"):
-            contexts = agent.mcp_manager.retrieve_online_context(context.user_query)
-        elif hasattr(agent.mcp_manager, "retrieve_context"):
-            contexts = agent.mcp_manager.retrieve_context(context.user_query)
+        if hasattr(agent.mcp_manager, "retrieve_online_context_async"):
+            contexts = await agent.mcp_manager.retrieve_online_context_async(context.user_query)
+        elif hasattr(agent.mcp_manager, "retrieve_context_async"):
+            contexts = await agent.mcp_manager.retrieve_context_async(context.user_query)
         else:
             contexts = []
         sanitized = []
@@ -194,20 +199,36 @@ class WriterNode(DAGNode):
                 "original_question": context.privileged_context.get("original_question") or context.user_query,
                 "response_language": context.privileged_context.get("response_language") or "Chinese",
                 "runtime": "dag",
+                "active_source_refs": context.privileged_context.get("active_source_refs", []),
+                "active_source_files": context.privileged_context.get("active_source_files", []),
                 "retrieval_diagnostics": retrieval_diagnostics,
                 "entity_profile": retrieval_diagnostics.get("entity_profile", {}),
                 "entity_coverage": entity_coverage or retrieval_diagnostics.get("entity_coverage", {}),
             },
         )
+        answer_generation: Dict[str, Any] = {}
         try:
-            answer = agent.generate_answer(built_context, stream_callback=context.privileged_context.get("stream_callback"))
-        except Exception:
+            client = agent._get_llm_client()
+            if client is None:
+                agent._last_answer_generation_metadata = {"fallback": True, "reason": "missing_llm_client_or_key"}
+                answer = agent._fallback_answer(built_context)
+            else:
+                answer = agent._generate_answer_without_tools(
+                    client,
+                    built_context,
+                    stream_callback=context.privileged_context.get("stream_callback"),
+                )
+            answer_generation = dict(getattr(agent, "_last_answer_generation_metadata", {}) or {})
+        except Exception as exc:
+            agent._last_answer_generation_metadata = {"fallback": True, "error": str(exc), "node": "dag.writer"}
+            answer_generation = dict(agent._last_answer_generation_metadata)
             answer = agent._fallback_answer(built_context)
         return {
             "answer": answer,
             "built_context": built_context,
             "ranked_chunks": ranked_chunks,
             "memories": memories,
+            "answer_generation": answer_generation,
             "content": answer,
         }
 
@@ -251,6 +272,7 @@ class MemoryWriterNode(DAGNode):
             context.user_query,
             answer,
             session_id=context.user_context.get("session_id") or "default",
+            provenance=agent._answer_references_from_built_context(writer_output.get("built_context")),
         )
         return {
             "skipped": False,

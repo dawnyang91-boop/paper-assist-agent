@@ -192,6 +192,7 @@ Original user question:
                 rerank_top_k=rerank_top_k,
                 context_top_k=context_top_k,
                 write_memory=write_memory,
+                transcript_store=graph.transcript_store,
                 stream_callback=stream_callback,
             )
         elif self.config.agent_runtime == "langgraph":
@@ -408,6 +409,37 @@ Original user question:
                     "metadata": item,
                 })
         return flattened
+
+    def _answer_references_from_built_context(self, built_context: Optional[BuiltContext]) -> Dict[str, Any]:
+        documents = list(getattr(built_context, "documents", []) or [])
+        return self._jsonable({
+            "sources": [
+                {
+                    "doc_id": document.doc_id,
+                    "source_file": document.source_file,
+                    "chunk_index": document.chunk_index,
+                    "score": document.score,
+                    "heading_paths": document.heading_paths,
+                    "metadata": document.metadata,
+                }
+                for document in documents
+            ],
+            "memories": list(getattr(built_context, "memories", []) or []),
+            "citations": [],
+        })
+
+    def _jsonable(self, value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            return {str(key): self._jsonable(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [self._jsonable(item) for item in value]
+        if hasattr(value, "__dataclass_fields__"):
+            return self._jsonable({field: getattr(value, field) for field in value.__dataclass_fields__})
+        if hasattr(value, "__dict__"):
+            return self._jsonable(vars(value))
+        return str(value)
 
     def generate_answer(
         self,
@@ -816,7 +848,15 @@ Original user question:
                 )
             return "当前没有检索到可用文档片段，无法基于私域知识库给出可靠答案。"
 
-        lines = ["未配置 OPENAI_API_KEY，以下是基于检索上下文的摘要式回答："]
+        metadata = self._last_answer_generation_metadata if isinstance(self._last_answer_generation_metadata, dict) else {}
+        if metadata.get("reason") == "missing_llm_client_or_key":
+            header = "未配置 OPENAI_API_KEY，以下是基于检索上下文的摘要式回答："
+        else:
+            error = metadata.get("error")
+            error_hint = f"（实际错误：{_safe_error_message(error)}）" if error else ""
+            header = f"LLM 客户端不可用或调用失败，以下是基于检索上下文的摘要式回答：{error_hint}"
+
+        lines = [header]
         for document in built_context.documents[:3]:
             snippet = document.content.strip().replace("\n", " ")
             if len(snippet) > 160:

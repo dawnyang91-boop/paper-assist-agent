@@ -34,6 +34,7 @@ if not LOGGER.handlers:
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 WEB_DIST_DIR = WEB_DIR / "dist"
 WEB_BASE_PATH = "/chatbot"
+API_BASE_PATH = "/api"
 RATE_LIMIT_BUCKETS: Dict[str, list[float]] = {}
 ASSISTANT_CACHE: Dict[bool, Tuple[Any, Any]] = {}
 ASSISTANT_CACHE_LOCK = threading.Lock()
@@ -85,7 +86,8 @@ class UploadedIngestRequest(BaseModel):
 
 
 class RenameSessionRequest(BaseModel):
-    new_session_id: str
+    new_session_id: Optional[str] = None
+    title: Optional[str] = None
 
 
 class RefreshSummaryRequest(BaseModel):
@@ -119,6 +121,7 @@ def web_index():
 
 @app.get("/health")
 @app.get(f"{WEB_BASE_PATH}/health")
+@app.get(f"{API_BASE_PATH}/health")
 def health():
     config = reload_config_from_env(override=True)
     return {
@@ -133,6 +136,7 @@ def health():
             "embed_vector_size": config.embed_vector_size,
             "env_files": [path for path, _ in env_signature()],
             "assistant_cache_size": len(ASSISTANT_CACHE),
+            "agent_runtime": config.agent_runtime,
             "pader_auth_mode": config.pader_auth_mode,
             "pader_api_base_url": config.pader_api_base_url,
             "web_base_path": WEB_BASE_PATH,
@@ -141,6 +145,7 @@ def health():
 
 
 @app.post(f"{WEB_BASE_PATH}/auth/register")
+@app.post(f"{API_BASE_PATH}/auth/register")
 @app.post("/auth/register")
 def register(payload: RegisterRequest):
     if not payload.email.strip() or not payload.password or not payload.name.strip():
@@ -163,6 +168,7 @@ def register(payload: RegisterRequest):
 
 
 @app.post(f"{WEB_BASE_PATH}/auth/login")
+@app.post(f"{API_BASE_PATH}/auth/login")
 @app.post("/auth/login")
 def login(payload: LoginRequest):
     try:
@@ -174,7 +180,15 @@ def login(payload: LoginRequest):
     return {"user": user}
 
 
+@app.post(f"{WEB_BASE_PATH}/auth/logout")
+@app.post(f"{API_BASE_PATH}/auth/logout")
+@app.post("/auth/logout")
+def logout():
+    return {"status": "ok"}
+
+
 @app.get(f"{WEB_BASE_PATH}/users/{{user_id}}")
+@app.get(f"{API_BASE_PATH}/users/{{user_id}}")
 @app.get("/users/{user_id}")
 def get_user(user_id: str):
     try:
@@ -193,6 +207,7 @@ def shutdown_event():
 
 
 @app.post(f"{WEB_BASE_PATH}/ask")
+@app.post(f"{API_BASE_PATH}/ask")
 @app.post("/ask")
 def ask(payload: AskRequest, request: Request):
     _enforce_api_policy(request)
@@ -214,6 +229,7 @@ def ask(payload: AskRequest, request: Request):
 
 
 @app.post(f"{WEB_BASE_PATH}/ask/stream")
+@app.post(f"{API_BASE_PATH}/ask/stream")
 @app.post("/ask/stream")
 def ask_stream(payload: AskRequest, request: Request):
     _enforce_api_policy(request)
@@ -334,6 +350,7 @@ def _runtime_config_signature(config) -> Tuple[Any, ...]:
         getattr(config, "sentinel_llm_judge_model", None),
         _secret_digest(getattr(config, "sentinel_llm_judge_api_key", None)),
         getattr(config, "sentinel_llm_judge_base_url", None),
+        getattr(config, "agent_runtime", None),
     )
 
 
@@ -404,6 +421,7 @@ def _close_auth_provider() -> None:
 
 
 @app.post(f"{WEB_BASE_PATH}/ingest")
+@app.post(f"{API_BASE_PATH}/ingest")
 @app.post("/ingest")
 def ingest(payload: IngestRequest, request: Request):
     _enforce_api_policy(request)
@@ -415,6 +433,7 @@ def ingest(payload: IngestRequest, request: Request):
 
 
 @app.post(f"{WEB_BASE_PATH}/rag/uploads")
+@app.post(f"{API_BASE_PATH}/rag/uploads")
 @app.post("/rag/uploads")
 def upload_rag_files(request: Request, files: list[UploadFile] = File(...)):
     _enforce_api_policy(request)
@@ -429,6 +448,7 @@ def upload_rag_files(request: Request, files: list[UploadFile] = File(...)):
 
 
 @app.get(f"{WEB_BASE_PATH}/rag/uploads")
+@app.get(f"{API_BASE_PATH}/rag/uploads")
 @app.get("/rag/uploads")
 def list_rag_uploads(request: Request):
     _enforce_api_policy(request)
@@ -437,6 +457,7 @@ def list_rag_uploads(request: Request):
 
 
 @app.delete(f"{WEB_BASE_PATH}/rag/uploads/{{file_id}}")
+@app.delete(f"{API_BASE_PATH}/rag/uploads/{{file_id}}")
 @app.delete("/rag/uploads/{file_id}")
 def delete_rag_upload(file_id: str, request: Request):
     _enforce_api_policy(request)
@@ -448,6 +469,7 @@ def delete_rag_upload(file_id: str, request: Request):
 
 
 @app.post(f"{WEB_BASE_PATH}/rag/uploads/ingest")
+@app.post(f"{API_BASE_PATH}/rag/uploads/ingest")
 @app.post("/rag/uploads/ingest")
 def ingest_uploaded_rag_files(payload: UploadedIngestRequest, request: Request):
     _enforce_api_policy(request)
@@ -473,6 +495,7 @@ def ingest_uploaded_rag_files(payload: UploadedIngestRequest, request: Request):
 
 
 @app.get(f"{WEB_BASE_PATH}/tasks/{{task_id}}")
+@app.get(f"{API_BASE_PATH}/tasks/{{task_id}}")
 @app.get("/tasks/{task_id}")
 def get_task(task_id: str, request: Request):
     _enforce_api_policy(request)
@@ -483,22 +506,24 @@ def get_task(task_id: str, request: Request):
 
 
 @app.get(f"{WEB_BASE_PATH}/sessions/{{session_id}}")
+@app.get(f"{API_BASE_PATH}/sessions/{{session_id}}")
 @app.get("/sessions/{session_id}")
 def session_info(session_id: str, request: Request, transcript_dir: Optional[str] = None):
     _enforce_api_policy(request)
-    store = _transcript_store(transcript_dir=transcript_dir, user_id=_request_user_id(request))
-    return {"session_id": session_id, "events": store.load(session_id)}
+    events = _load_session_events(session_id, transcript_dir=transcript_dir, user_id=_request_user_id(request))
+    return {"session_id": session_id, "events": events}
 
 
 @app.get(f"{WEB_BASE_PATH}/sessions")
+@app.get(f"{API_BASE_PATH}/sessions")
 @app.get("/sessions")
 def list_sessions(request: Request):
     _enforce_api_policy(request)
-    store = _transcript_store(user_id=_request_user_id(request))
-    return {"sessions": store.list_sessions()}
+    return {"sessions": _list_transcript_sessions(user_id=_request_user_id(request))}
 
 
 @app.delete(f"{WEB_BASE_PATH}/sessions/{{session_id}}")
+@app.delete(f"{API_BASE_PATH}/sessions/{{session_id}}")
 @app.delete("/sessions/{session_id}")
 def delete_session(session_id: str, request: Request):
     _enforce_api_policy(request)
@@ -510,22 +535,25 @@ def delete_session(session_id: str, request: Request):
 
 
 @app.post(f"{WEB_BASE_PATH}/sessions/{{session_id}}/rename")
+@app.post(f"{API_BASE_PATH}/sessions/{{session_id}}/rename")
 @app.post("/sessions/{session_id}/rename")
 def rename_session(session_id: str, payload: RenameSessionRequest, request: Request):
     _enforce_api_policy(request)
-    if not payload.new_session_id.strip():
+    next_session_id = (payload.new_session_id or payload.title or "").strip()
+    if not next_session_id:
         raise HTTPException(status_code=400, detail={"code": "empty_session_id", "message": "新 session_id 不能为空。"})
     store = _transcript_store(user_id=_request_user_id(request))
     try:
-        renamed = store.rename(session_id, payload.new_session_id.strip())
+        renamed = store.rename(session_id, next_session_id)
     except FileExistsError as exc:
         raise HTTPException(status_code=409, detail={"code": "session_exists", "message": str(exc)}) from exc
     if not renamed:
         raise HTTPException(status_code=404, detail={"code": "session_not_found", "message": "Session 不存在。"})
-    return {"status": "ok", "old_session_id": session_id, "new_session_id": payload.new_session_id.strip()}
+    return {"status": "ok", "old_session_id": session_id, "new_session_id": next_session_id}
 
 
 @app.post(f"{WEB_BASE_PATH}/sessions/{{session_id}}/summary")
+@app.post(f"{API_BASE_PATH}/sessions/{{session_id}}/summary")
 @app.post("/sessions/{session_id}/summary")
 def refresh_session_summary(session_id: str, payload: RefreshSummaryRequest, request: Request):
     _enforce_api_policy(request)
@@ -614,9 +642,42 @@ def _transcript_store(transcript_dir: Optional[str] = None, user_id: Optional[st
 
     config = get_config()
     root_dir = Path(transcript_dir or config.transcript_dir)
-    if user_id:
+    if user_id and user_id != "local":
         root_dir = root_dir / _safe_user_id(user_id)
     return TranscriptStore(root_dir=root_dir, enabled=True)
+
+
+def _legacy_transcript_store(transcript_dir: Optional[str] = None):
+    from config import get_config
+    from storage.transcript_store import TranscriptStore
+
+    config = get_config()
+    return TranscriptStore(root_dir=Path(transcript_dir or config.transcript_dir), enabled=True)
+
+
+def _list_transcript_sessions(user_id: str) -> list[dict]:
+    primary = _transcript_store(user_id=user_id)
+    sessions = list(primary.list_sessions())
+    if user_id == "local":
+        return sessions
+
+    seen = {item.get("session_id") for item in sessions}
+    for item in _legacy_transcript_store().list_sessions():
+        if item.get("session_id") in seen:
+            continue
+        legacy = dict(item)
+        legacy.setdefault("metadata", {})
+        legacy["legacy_root_transcript"] = True
+        sessions.append(legacy)
+        seen.add(item.get("session_id"))
+    return sorted(sessions, key=lambda item: item.get("updated_at") or 0, reverse=True)
+
+
+def _load_session_events(session_id: str, transcript_dir: Optional[str] = None, user_id: str = "local") -> list[dict]:
+    primary_events = _transcript_store(transcript_dir=transcript_dir, user_id=user_id).load(session_id)
+    if primary_events or user_id == "local":
+        return primary_events
+    return _legacy_transcript_store(transcript_dir=transcript_dir).load(session_id)
 
 
 def _safe_user_id(user_id: str) -> str:
@@ -634,7 +695,7 @@ def _web_index_response(index_path: Path) -> FileResponse:
 
 @app.get("/{full_path:path}")
 def spa_fallback(full_path: str):
-    api_prefixes = ("ask", "sessions", "auth", "users", "health", "ingest", "rag", "tasks", "static")
+    api_prefixes = ("api", "ask", "sessions", "auth", "users", "health", "ingest", "rag", "tasks", "static")
     if full_path.startswith(api_prefixes):
         raise HTTPException(status_code=404, detail="Not found")
     if full_path.startswith(f"{WEB_BASE_PATH.strip('/')}/"):

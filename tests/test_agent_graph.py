@@ -87,8 +87,8 @@ class FakeMemoryManager:
         self.add_calls.append((session_id, user_message, assistant_answer))
         return []
 
-    def process_high_value_qa(self, question, answer, session_id=None):
-        self.fact_calls.append((question, answer, session_id))
+    def process_high_value_qa(self, question, answer, session_id=None, provenance=None):
+        self.fact_calls.append((question, answer, session_id, provenance))
         return SimpleNamespace(facts=["SENet 使用 SE block"], semantic_ids=[], graph_written=False, errors=[])
 
 
@@ -232,6 +232,36 @@ class AgentGraphTest(unittest.TestCase):
             self.assertIn("sources", references)
             self.assertGreaterEqual(len(references["sources"]), 1)
             self.assertEqual(references["sources"][0]["doc_id"], "D1")
+
+    def test_follow_up_uses_previous_answer_sources_as_rag_anchor(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = AppConfig(
+                openai_api_key="test-key",
+                transcript_dir=temp_dir,
+                transcript_resume_enabled=True,
+            )
+            agent = self.build_agent(config=config)
+
+            agent.answer(
+                "请总结 SENet 这篇论文",
+                session_id="demo",
+                modes=(QUERY_MODE_BASIC,),
+                transcript_enabled=True,
+            )
+            result = agent.answer(
+                "它的实验效果如何？",
+                session_id="demo",
+                modes=(QUERY_MODE_BASIC,),
+                transcript_enabled=True,
+            )
+
+            diagnostics = result.metadata["retrieval_diagnostics"]
+            self.assertIn("SENet.md", diagnostics.get("source_file_hints", []))
+            self.assertGreaterEqual(
+                result.metadata["local_context_assessment"]["active_source_ref_count"],
+                1,
+            )
+            self.assertIn("[D1]", result.answer)
 
     def test_rule_mcp_tool_result_enters_context(self):
         mcp_manager = FakeRuleMCPManager()

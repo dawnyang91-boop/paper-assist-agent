@@ -11,6 +11,7 @@ from agent_dag.edge_guard import EdgeGuard
 from agent_dag.evidence_store import SharedEvidenceStore
 from agent_dag.node_registry import build_default_registry
 from agent_dag.trace import DAGTrace
+from rag.provenance import extract_source_refs_from_events, looks_like_follow_up, source_files_from_refs
 
 
 class DAGAgentRuntime:
@@ -74,6 +75,8 @@ class DAGAgentRuntime:
             "original_question": question,
             "response_language": "Chinese",
         }
+        self._load_follow_up_source_refs(payload, state, privileged)
+        self._record_transcript(payload, state, role="user", content=question)
         base_context = AgentContext(
             task_id=task_id,
             node_id="root",
@@ -116,6 +119,17 @@ class DAGAgentRuntime:
             trace.add_node(result, evidence_written=len(evidence_items), output_risk_score=getattr(decision, "risk_score", 0.0))
             self._merge_node_output(state, result)
 
+        if self._merge_memory_provenance_refs(state, privileged):
+            rag_result = await self._run_node("rag", base_context, privileged_keys=list(privileged))
+            allowed, decision, evidence_items = edge_guard.check_result(rag_result, receiver="writer")
+            trace.add_edge("memory", "rag", {"reason": "memory provenance rehydration"})
+            trace.add_edge(rag_result.node_id, "writer", decision)
+            if allowed:
+                for item in evidence_items:
+                    evidence_store.add(item)
+            trace.add_node(rag_result, evidence_written=len(evidence_items), output_risk_score=getattr(decision, "risk_score", 0.0))
+            self._merge_node_output(state, rag_result)
+
         writer_result = await self._run_node("writer", base_context, privileged_keys=list(privileged))
         trace.add_node(writer_result)
         writer_output = writer_result.output or {}
@@ -123,6 +137,7 @@ class DAGAgentRuntime:
         state.built_context = writer_output.get("built_context")
         state.ranked_chunks = list(writer_output.get("ranked_chunks") or state.ranked_chunks)
         state.usage["context_memories"] = list(writer_output.get("memories") or state.usage.get("context_memories", []))
+        state.usage["answer_generation"] = dict(writer_output.get("answer_generation") or {})
         privileged["writer_output"] = writer_output
 
         output_decision = self.agent.security_manager.post_check_output(state.answer)
@@ -149,7 +164,113 @@ class DAGAgentRuntime:
         state.stop_reason = "final"
         state.usage["dag"] = trace.to_dict(evidence_count=len(evidence_store.all()))
         state.usage["runtime"] = "dag"
+        if state.answer:
+            self._record_transcript(
+                payload,
+                state,
+                role="assistant",
+                content=state.answer,
+                metadata={
+                    "stop_reason": state.stop_reason,
+                    "verification": state.verification,
+                    "references": self.agent._answer_references_from_built_context(state.built_context),
+                },
+            )
         return state
+
+    def _record_transcript(
+        self,
+        payload: Dict[str, Any],
+        state: AgentState,
+        role: str,
+        content: str,
+        metadata: Dict[str, Any] | None = None,
+    ) -> None:
+        transcript_store = payload.get("transcript_store")
+        if transcript_store is None:
+            return
+        try:
+            event = transcript_store.append(
+                session_id=state.session_id,
+                role=role,
+                content=content,
+                metadata=metadata,
+            )
+            if event:
+                state.messages.append(event)
+        except Exception as exc:
+            state.add_error("dag.record_transcript", exc)
+
+    def _load_follow_up_source_refs(
+        self,
+        payload: Dict[str, Any],
+        state: AgentState,
+        privileged: Dict[str, Any],
+    ) -> None:
+        transcript_store = payload.get("transcript_store")
+        if transcript_store is None or not getattr(self.config, "transcript_resume_enabled", False):
+            return
+        try:
+            events = transcript_store.load(state.session_id)
+        except Exception as exc:
+            state.add_error("dag.load_session_state", exc)
+            return
+        recent_events = events[-max(1, self.config.transcript_resume_max_events):]
+        state.resumed_transcript = recent_events
+        source_refs = extract_source_refs_from_events(recent_events)
+        if source_refs and looks_like_follow_up(state.raw_input):
+            refs = [ref.to_dict() for ref in source_refs]
+            files = source_files_from_refs(source_refs)
+            state.active_source_refs = refs
+            state.usage["active_source_refs"] = refs
+            state.usage["active_source_files"] = files
+            privileged["active_source_refs"] = refs
+            privileged["active_source_files"] = files
+
+    def _merge_memory_provenance_refs(self, state: AgentState, privileged: Dict[str, Any]) -> bool:
+        refs = list(privileged.get("active_source_refs") or state.active_source_refs or [])
+        seen = {
+            (item.get("source_file"), item.get("chunk_index"))
+            for item in refs
+            if isinstance(item, dict)
+        }
+        before = len(refs)
+        for item in self.agent._flatten_retrieved_memories(state.retrieved_memories):
+            metadata = item.get("metadata") or {}
+            payload = metadata.get("payload") if isinstance(metadata, dict) else None
+            provenance = metadata.get("provenance") if isinstance(metadata, dict) else None
+            if not provenance and isinstance(payload, dict):
+                provenance = payload.get("provenance")
+            if not isinstance(provenance, dict):
+                continue
+            for source in provenance.get("sources") or []:
+                if not isinstance(source, dict) or not source.get("source_file"):
+                    continue
+                ref = {
+                    "source_file": source.get("source_file"),
+                    "chunk_index": source.get("chunk_index"),
+                    "doc_id": source.get("doc_id"),
+                    "heading_paths": source.get("heading_paths") or [],
+                    "from_memory": True,
+                }
+                key = (ref.get("source_file"), ref.get("chunk_index"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                refs.append(ref)
+        if len(refs) <= before:
+            return False
+        files = sorted({
+            str(item.get("source_file"))
+            for item in refs
+            if isinstance(item, dict) and item.get("source_file")
+        })
+        state.active_source_refs = refs
+        state.usage["active_source_refs"] = refs
+        state.usage["active_source_files"] = files
+        privileged["active_source_refs"] = refs
+        privileged["active_source_files"] = files
+        return True
 
     async def _run_node(self, node_id: str, base_context: AgentContext, privileged_keys: List[str]) -> Any:
         node = self.nodes[node_id]
@@ -168,6 +289,8 @@ class DAGAgentRuntime:
         if result.node_id == "rag":
             state.candidates = list(output.get("candidates") or [])
             state.ranked_chunks = list(output.get("ranked_chunks") or [])
+            state.usage["retrieval_diagnostics"] = dict(output.get("retrieval_diagnostics") or {})
+            state.usage["entity_coverage"] = dict(output.get("entity_coverage") or {})
             if output.get("sentinel_decisions"):
                 state.usage.setdefault("sentinel", {}).setdefault("rag_sanitize_decisions", []).extend(output["sentinel_decisions"])
         elif result.node_id == "memory":

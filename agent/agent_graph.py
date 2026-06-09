@@ -8,6 +8,8 @@ from agent.checkpoint_store import SQLiteCheckpointStore
 from config import AppConfig
 from memory.session_summary import SessionSummaryBuilder
 from rag.context_builder import estimate_tokens
+from rag.provenance import extract_source_refs_from_events, looks_like_follow_up, source_files_from_refs
+from rag.rag_query import QUERY_MODE_BASIC
 from rag.reranker import lexical_overlap, topic_overlap
 from storage.transcript_store import TranscriptStore
 
@@ -117,6 +119,10 @@ class AgentGraph:
         )
         self.save_checkpoint(state, "retrieve_rag")
         self.retrieve_memory(state, include_memory_manager=include_memory_manager, top_k=memory_top_k)
+        self.rehydrate_rag_from_active_sources(
+            state,
+            rerank_top_k=state.usage.get("effective_rerank_top_k"),
+        )
         self.apply_skills(state, include_skills=include_skills)
         self.assess_local_context(state, include_mcp=include_mcp)
         self.save_checkpoint(state, "retrieve_context")
@@ -136,6 +142,10 @@ class AgentGraph:
             state.decisions.append({"action": decision.action, "reason": decision.reason, "tool_requests": decision.tool_requests})
         elif decision.action == "retrieve_more_memory":
             self.retrieve_memory(state, include_memory_manager=include_memory_manager, top_k=memory_top_k * 2)
+            self.rehydrate_rag_from_active_sources(
+                state,
+                rerank_top_k=state.usage.get("effective_rerank_top_k"),
+            )
             self.save_checkpoint(state, "retrieve_more_memory")
             decision = self.decide_next_action(state, include_mcp=include_mcp)
             state.decisions.append({"action": decision.action, "reason": decision.reason, "tool_requests": decision.tool_requests})
@@ -271,6 +281,11 @@ class AgentGraph:
         recent_events = events[-max(1, self.config.transcript_resume_max_events):]
         state.resumed_transcript = recent_events
         state.messages.extend(recent_events)
+        source_refs = extract_source_refs_from_events(recent_events)
+        if source_refs and looks_like_follow_up(state.raw_input):
+            state.active_source_refs = [ref.to_dict() for ref in source_refs]
+            state.usage["active_source_refs"] = list(state.active_source_refs)
+            state.usage["active_source_files"] = source_files_from_refs(source_refs)
         transcript_memories = []
         if self.config.session_summary_enabled:
             summary_memory = self.session_summary_builder.build_memory(recent_events)
@@ -381,12 +396,15 @@ class AgentGraph:
                 top_k=top_k or self.config.rag_query_top_k,
                 per_query_limit=per_query_limit,
                 mqe_count=mqe_count,
+                source_file_hints=state.usage.get("active_source_files", []),
+                provenance_refs=state.active_source_refs,
             )
             state.usage["retrieval_diagnostics"] = getattr(
                 self.agent.query_engine,
                 "last_retrieval_diagnostics",
                 {},
             )
+            state.usage["rag_active_source_ref_count"] = len(state.active_source_refs)
             state.ranked_chunks = self.agent.reranker.rerank(
                 question=state.question,
                 candidates=state.candidates,
@@ -402,6 +420,59 @@ class AgentGraph:
             state.add_error("retrieve_rag", exc)
             state.candidates = []
             state.ranked_chunks = []
+
+    def rehydrate_rag_from_active_sources(
+        self,
+        state: AgentState,
+        rerank_top_k: Optional[int] = None,
+    ) -> None:
+        """Use references restored from transcript/memory to fetch citeable RAG chunks.
+
+        Memory items are useful for routing a follow-up question back to the
+        document being discussed, but the final answer should still cite [D]
+        snippets. This second pass runs only when new source refs appeared after
+        the first RAG retrieval, usually from semantic/working memory.
+        """
+        if not state.query_plan or not state.query_plan.need_rag:
+            return
+        if not state.active_source_refs:
+            return
+        previous_ref_count = int(state.usage.get("rag_active_source_ref_count") or 0)
+        if previous_ref_count >= len(state.active_source_refs):
+            return
+        try:
+            source_chunks = self.agent.query_engine.search(
+                question=state.question,
+                modes=(QUERY_MODE_BASIC,),
+                top_k=max(
+                    self.config.rag_query_top_k,
+                    len(state.active_source_refs),
+                ),
+                per_query_limit=state.usage.get("effective_per_query_limit") or self.config.rag_query_per_query_limit,
+                source_file_hints=state.usage.get("active_source_files", []),
+                provenance_refs=state.active_source_refs,
+            )
+            state.candidates = self.agent.query_engine.dedupe_results([
+                *state.candidates,
+                *source_chunks,
+            ])
+            state.ranked_chunks = self.agent.reranker.rerank(
+                question=state.question,
+                candidates=state.candidates,
+                top_k=rerank_top_k or self.config.rag_rerank_top_k,
+            )
+            if hasattr(self.agent.query_engine, "entity_extractor"):
+                coverage = self.agent.query_engine.entity_extractor.coverage(state.question, state.ranked_chunks)
+                state.usage["entity_coverage"] = coverage.to_dict()
+            diagnostics = dict(getattr(self.agent.query_engine, "last_retrieval_diagnostics", {}) or {})
+            diagnostics["provenance_rehydration_used"] = True
+            diagnostics["active_source_ref_count"] = len(state.active_source_refs)
+            state.usage["retrieval_diagnostics"] = diagnostics
+            state.usage["rag_active_source_ref_count"] = len(state.active_source_refs)
+            state.usage["provenance_rehydration_used"] = True
+            self.sanitize_rag_context(state)
+        except Exception as exc:
+            state.add_error("rehydrate_rag_from_active_sources", exc)
 
     def sanitize_rag_context(self, state: AgentState) -> None:
         if not self._sentinel_enabled():
@@ -433,10 +504,50 @@ class AgentGraph:
                 top_k=top_k,
             )
             state.usage["memory_retrieval_diagnostics"] = state.retrieved_memories.get("_diagnostics", {})
+            self._merge_memory_provenance_refs(state)
         except Exception as exc:
             state.add_error("retrieve_memory", exc)
             state.retrieved_memories = {}
             state.usage["memory_retrieval_diagnostics"] = {"error": str(exc)}
+
+    def _merge_memory_provenance_refs(self, state: AgentState) -> None:
+        refs = list(state.active_source_refs or [])
+        seen = {
+            (item.get("source_file"), item.get("chunk_index"))
+            for item in refs
+            if isinstance(item, dict)
+        }
+        for item in self.agent._flatten_retrieved_memories(state.retrieved_memories):
+            metadata = item.get("metadata") or {}
+            payload = metadata.get("payload") if isinstance(metadata, dict) else None
+            provenance = metadata.get("provenance") if isinstance(metadata, dict) else None
+            if not provenance and isinstance(payload, dict):
+                provenance = payload.get("provenance")
+            if not isinstance(provenance, dict):
+                continue
+            for source in provenance.get("sources") or []:
+                if not isinstance(source, dict) or not source.get("source_file"):
+                    continue
+                ref = {
+                    "source_file": source.get("source_file"),
+                    "chunk_index": source.get("chunk_index"),
+                    "doc_id": source.get("doc_id"),
+                    "heading_paths": source.get("heading_paths") or [],
+                    "from_memory": True,
+                }
+                key = (ref.get("source_file"), ref.get("chunk_index"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                refs.append(ref)
+        if refs:
+            state.active_source_refs = refs
+            state.usage["active_source_refs"] = refs
+            state.usage["active_source_files"] = sorted({
+                str(item.get("source_file"))
+                for item in refs
+                if isinstance(item, dict) and item.get("source_file")
+            })
 
     def apply_skills(self, state: AgentState, include_skills: bool) -> None:
         if not include_skills or self.agent.skill_manager is None:
@@ -489,6 +600,8 @@ class AgentGraph:
         )
         threshold = self.config.agent_loop_local_relevance_threshold
         has_relevant_local_context = max(top_document_topic, top_memory_topic) >= threshold
+        if state.active_source_refs and state.ranked_chunks:
+            has_relevant_local_context = True
         entity_coverage = state.usage.get("entity_coverage") or (state.usage.get("retrieval_diagnostics", {}) or {}).get("entity_coverage") or {}
         entity_coverage_failed = bool(entity_coverage.get("entity_coverage_failed"))
         if self.config.rag_entity_required_for_strong_query and entity_coverage_failed:
@@ -520,6 +633,8 @@ class AgentGraph:
             "top_memory_topic": top_memory_topic,
             "threshold": threshold,
             "entity_coverage_failed": entity_coverage_failed,
+            "active_source_ref_count": len(state.active_source_refs),
+            "active_source_files": state.usage.get("active_source_files", []),
             "has_relevant_local_context": has_relevant_local_context,
             "online_search_available": online_search_available,
             "online_available": online_available,
@@ -708,6 +823,7 @@ class AgentGraph:
                 state.question,
                 state.answer,
                 session_id=state.session_id,
+                provenance=self._answer_references(state),
             )
             state.writeback_events.append({"type": "semantic_fact", "result": fact_result})
         except Exception as exc:
@@ -1235,6 +1351,8 @@ class AgentGraph:
             "retrieval_diagnostics": retrieval_diagnostics,
             "entity_profile": retrieval_diagnostics.get("entity_profile", {}),
             "entity_coverage": state.usage.get("entity_coverage") or retrieval_diagnostics.get("entity_coverage", {}),
+            "active_source_refs": state.active_source_refs,
+            "active_source_files": state.usage.get("active_source_files", []),
         })
         return status
 

@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -146,3 +147,35 @@ def test_qa_agent_dag_runtime_returns_answer_and_trace():
     assert result.metadata["dag"]["nodes"]
     assert result.metadata["dag"]["edges"]
     assert result.metadata["document_count"] >= 1
+
+
+def test_qa_agent_dag_follow_up_restores_previous_sources():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        config = AppConfig(
+            openai_api_key="test-key",
+            agent_runtime="dag",
+            transcript_dir=temp_dir,
+            transcript_resume_enabled=True,
+        )
+        agent = build_agent(config=config)
+
+        agent.answer(
+            "请总结 SENet 这篇论文",
+            session_id="demo",
+            modes=(QUERY_MODE_BASIC,),
+            include_memory_manager=False,
+            include_mcp=False,
+            transcript_enabled=True,
+        )
+        result = agent.answer(
+            "它的实验效果如何？",
+            session_id="demo",
+            modes=(QUERY_MODE_BASIC,),
+            include_memory_manager=False,
+            include_mcp=False,
+            transcript_enabled=True,
+        )
+
+        assert "SENet.md" in result.metadata["retrieval_diagnostics"].get("source_file_hints", [])
+        assert result.metadata["document_count"] >= 1
+        assert "[D1]" in result.answer

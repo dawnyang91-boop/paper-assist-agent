@@ -154,6 +154,16 @@ class ContextBuilder:
                 "Answer mode: local context is insufficient and online search is unavailable or returned no useful result. Clearly separate local evidence from model general knowledge.",
             ])
 
+        active_source_files = evidence_status.get("active_source_files") or []
+        if active_source_files:
+            sections.extend([
+                "",
+                "Follow-up context anchor:",
+                "- The user is likely asking about the previously cited local document(s): "
+                + ", ".join(map(str, active_source_files)),
+                "- Treat memories as routing hints only. Use retrieved [D] document snippets as the citeable evidence.",
+            ])
+
         entity_profile = evidence_status.get("entity_profile") or {}
         entity_coverage = evidence_status.get("entity_coverage") or {}
         required_entities = entity_coverage.get("required_entities") or entity_profile.get("entities") or []

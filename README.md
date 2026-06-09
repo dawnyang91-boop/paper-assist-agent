@@ -865,6 +865,11 @@ python -m uvicorn app.api:app --host 0.0.0.0 --port 8000
 # 启动前端
 cd web && npm run dev
 
+# 默认前端请求 /api/*，由 Vite 代理到 Spring Boot http://127.0.0.1:8088
+# Spring Boot 再转发到 Python Agent http://127.0.0.1:8000/chatbot
+# 如果要绕过 Spring 直接调 Python，可设置：
+# VITE_API_BASE=/chatbot VITE_DEV_API_TARGET=http://127.0.0.1:8000 npm run dev
+
 # 上传文件后通过 Web UI 点击“开始向量化”
 # 或调用上传/ingest API，详见 app/api.py
 

@@ -260,12 +260,17 @@ class RAGQueryEngine:
         top_k: Optional[int] = None,
         per_query_limit: Optional[int] = None,
         mqe_count: Optional[int] = None,
+        source_file_hints: Optional[Sequence[str]] = None,
+        provenance_refs: Optional[Sequence[Dict[str, Any]]] = None,
     ) -> List[RetrievedChunk]:
         top_k = top_k or self.config.rag_query_top_k
         per_query_limit = per_query_limit or self.config.rag_query_per_query_limit or max(top_k, 5)
         entity_profile = self.entity_extractor.extract(question)
         variants = self.generate_query_vectors(question, modes=modes, mqe_count=mqe_count)
 
+        source_file_hints = [str(item) for item in (source_file_hints or []) if item]
+        provenance_refs = list(provenance_refs or [])
+        rehydrated_candidates = self.fetch_by_provenance(provenance_refs, query_text=question)
         vector_candidates = []
         for variant in variants:
             if variant.vector is None:
@@ -273,13 +278,27 @@ class RAGQueryEngine:
             hits = self._vector_search(variant.vector, limit=per_query_limit)
             for hit in hits:
                 vector_candidates.append(self._to_retrieved_chunk(hit, variant))
+            if source_file_hints:
+                hinted_hits = self._vector_search(
+                    variant.vector,
+                    limit=per_query_limit,
+                    source_file_hints=source_file_hints,
+                )
+                for hit in hinted_hits:
+                    chunk = self._to_retrieved_chunk(hit, variant)
+                    chunk.query_mode = f"source_hint_{variant.mode}"
+                    chunk.payload["_source_hint_match"] = True
+                    for source_hit in chunk.source_hits:
+                        source_hit["query_mode"] = chunk.query_mode
+                        source_hit["source_file_hints"] = source_file_hints
+                    vector_candidates.append(chunk)
 
         bm25_candidates = self._bm25_search(question, entity_profile=entity_profile)
         candidate_limit = top_k
         if self.bm25_index is not None:
             candidate_limit = max(top_k, self.config.rag_hybrid_candidate_k)
 
-        deduped = self.dedupe_results([*vector_candidates, *bm25_candidates])
+        deduped = self.dedupe_results([*rehydrated_candidates, *vector_candidates, *bm25_candidates])
         entity_coverage = self.entity_extractor.coverage(question, deduped)
         self.last_retrieval_diagnostics = {
             "bm25_enabled": bool(self.config.rag_bm25_enabled),
@@ -288,6 +307,8 @@ class RAGQueryEngine:
             "entity_profile": entity_profile.to_dict(),
             "entity_coverage": entity_coverage.to_dict(),
             "vector_candidate_count": len(vector_candidates),
+            "rehydrated_candidate_count": len(rehydrated_candidates),
+            "source_file_hints": source_file_hints,
             "bm25_candidate_count": len(bm25_candidates),
             "hybrid_candidate_count": len(deduped),
             "hybrid_hit_count": sum(1 for item in deduped if item.payload.get("_hybrid_hit")),
@@ -297,26 +318,111 @@ class RAGQueryEngine:
 
         return deduped[:candidate_limit]
 
-    def _vector_search(self, query_vector: List[float], limit: int):
+    def _vector_search(
+        self,
+        query_vector: List[float],
+        limit: int,
+        source_file_hints: Optional[Sequence[str]] = None,
+    ):
+        query_filter = self._source_file_filter(source_file_hints)
         if hasattr(self.qdrant, "search"):
-            return self.qdrant.search(
-                collection_name=self.collection_name,
-                query_vector=query_vector,
-                limit=limit,
-            )
+            kwargs = {
+                "collection_name": self.collection_name,
+                "query_vector": query_vector,
+                "limit": limit,
+            }
+            if query_filter is not None:
+                kwargs["query_filter"] = query_filter
+            try:
+                return self.qdrant.search(**kwargs)
+            except TypeError:
+                kwargs.pop("query_filter", None)
+                return self.qdrant.search(**kwargs)
 
         if hasattr(self.qdrant, "query_points"):
-            response = self.qdrant.query_points(
-                collection_name=self.collection_name,
-                query=query_vector,
-                limit=limit,
-            )
+            kwargs = {
+                "collection_name": self.collection_name,
+                "query": query_vector,
+                "limit": limit,
+            }
+            if query_filter is not None:
+                kwargs["query_filter"] = query_filter
+            try:
+                response = self.qdrant.query_points(**kwargs)
+            except TypeError:
+                kwargs.pop("query_filter", None)
+                response = self.qdrant.query_points(**kwargs)
             return getattr(response, "points", response)
 
         raise AttributeError(
             "当前 QdrantClient 既没有 search，也没有 query_points，"
             "请检查 qdrant-client 版本或传入兼容的客户端。"
         )
+
+    def fetch_by_provenance(
+        self,
+        provenance_refs: Sequence[Dict[str, Any]],
+        query_text: str = "",
+        limit: int = 12,
+    ) -> List[RetrievedChunk]:
+        chunks: List[RetrievedChunk] = []
+        if not provenance_refs or not hasattr(self.qdrant, "scroll"):
+            return chunks
+        try:
+            from qdrant_client.http import models
+        except Exception:
+            return chunks
+
+        seen = set()
+        for ref in provenance_refs[:limit]:
+            source_file = ref.get("source_file")
+            if not source_file:
+                continue
+            chunk_index = ref.get("chunk_index")
+            key = (source_file, chunk_index)
+            if key in seen:
+                continue
+            seen.add(key)
+            must = [
+                models.FieldCondition(
+                    key="source_file",
+                    match=models.MatchValue(value=source_file),
+                )
+            ]
+            if chunk_index is not None:
+                must.append(models.FieldCondition(
+                    key="chunk_index",
+                    match=models.MatchValue(value=chunk_index),
+                ))
+            try:
+                points, _ = self.qdrant.scroll(
+                    collection_name=self.collection_name,
+                    scroll_filter=models.Filter(must=must),
+                    limit=1,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+            except Exception:
+                continue
+            for point in points or []:
+                payload = dict(getattr(point, "payload", {}) or {})
+                payload["_provenance_rehydrated"] = True
+                chunks.append(RetrievedChunk(
+                    id=getattr(point, "id", None),
+                    score=1.0,
+                    payload=payload,
+                    query_mode="provenance",
+                    query_text=query_text,
+                    source_hits=[{
+                        "id": getattr(point, "id", None),
+                        "score": 1.0,
+                        "query_mode": "provenance",
+                        "query_text": query_text,
+                        "source_file": source_file,
+                        "chunk_index": chunk_index,
+                    }],
+                ))
+        return chunks
 
     def dedupe_results(self, chunks: Iterable[RetrievedChunk]) -> List[RetrievedChunk]:
         deduped: Dict[str, RetrievedChunk] = {}
@@ -414,6 +520,25 @@ class RAGQueryEngine:
     def _merge_payload_scores(self, target: Dict[str, Any], source: Dict[str, Any]) -> None:
         for key in ("_vector_score", "_bm25_score"):
             target[key] = max(float(target.get(key, 0.0) or 0.0), float(source.get(key, 0.0) or 0.0))
+        for key in ("_source_hint_match", "_provenance_rehydrated"):
+            target[key] = bool(target.get(key) or source.get(key))
+
+    def _source_file_filter(self, source_file_hints: Optional[Sequence[str]]):
+        hints = [str(item) for item in (source_file_hints or []) if item]
+        if not hints:
+            return None
+        try:
+            from qdrant_client.http import models
+        except Exception:
+            return None
+        should = [
+            models.FieldCondition(
+                key="source_file",
+                match=models.MatchValue(value=source_file),
+            )
+            for source_file in hints
+        ]
+        return models.Filter(should=should)
 
     def _is_hybrid_modes(self, modes: set) -> bool:
         has_bm25 = "bm25" in modes
