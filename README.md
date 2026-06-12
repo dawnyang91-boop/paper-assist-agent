@@ -251,37 +251,7 @@ flowchart LR
 
 ---
 
-## 4. 快速开始
-
-### 4.1 克隆项目
-
-```bash
-git clone https://github.com/dawnyang91-boop/paper-assist-agent.git
-cd paper-assist-agent
-```
-
-### 4.2 创建虚拟环境
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-```
-
-Windows 可使用：
-
-```bash
-.venv\Scripts\activate
-```
-
-### 4.3 安装依赖
-
-```bash
-pip install -r requirements.txt
-```
-
----
-
-## 5. 环境变量配置
+## 4. 环境变量配置
 
 项目会读取当前目录或父目录下的 `.env` 文件。
 
@@ -304,9 +274,9 @@ EMBED_VECTOR_SIZE=384
 
 ---
 
-## 6. 启动依赖服务
+## 5. 启动依赖服务
 
-### 6.1 Qdrant
+### 5.1 Qdrant
 
 本地 Docker 示例：
 
@@ -316,7 +286,7 @@ docker run -p 6333:6333 -p 6334:6334 \
   qdrant/qdrant
 ```
 
-### 6.2 Redis，可选
+### 5.2 Redis，可选
 
 ```bash
 docker run -p 6379:6379 redis:7
@@ -329,7 +299,7 @@ REDIS_ENABLED=true
 REDIS_URL=redis://localhost:6379/0
 ```
 
-### 6.3 Neo4j，可选
+### 5.3 Neo4j，可选
 
 ```env
 NEO4J_URI=bolt://localhost:7687
@@ -341,7 +311,7 @@ Neo4j 不可用时，语义图谱增强会被跳过，主流程仍可运行。
 
 ---
 
-## 7. 文档入库
+## 6. 文档入库
 
 将文档放入 `test_files/` 或自定义目录：
 
@@ -369,15 +339,15 @@ python -m app.main ingest --data-dir ./test_files
 
 ---
 
-## 8. CLI 使用
+## 7. CLI 使用
 
-### 8.1 单轮问答
+### 7.1 单轮问答
 
 ```bash
 python -m app.main ask "请总结 OneTrans 的核心方法" --session-id demo --show-trace
 ```
 
-### 8.2 交互式对话
+### 7.2 交互式对话
 
 ```bash
 python -m app.main chat --session-id demo --show-trace
@@ -393,7 +363,7 @@ python -m app.main chat --session-id demo --show-trace
 /ingest xxx 将指定文件或目录写入 RAG 知识库
 ```
 
-### 8.3 Legacy vs DAG 延迟对比
+### 7.3 Legacy vs DAG 延迟对比
 
 ```bash
 python -m app.main benchmark-runtime \
@@ -420,7 +390,7 @@ python -m app.main benchmark-runtime \
 
 ---
 
-## 9. FastAPI 服务
+## 8. FastAPI 服务
 
 启动：
 
@@ -476,7 +446,7 @@ curl http://127.0.0.1:8000/chatbot/sessions/demo
 
 ---
 
-## 10. RAG 与 Agent 流程
+## 9. RAG 与 Agent 流程
 
 一次完整问答大致包含：
 
@@ -507,11 +477,11 @@ DAG runtime 会将本地检索、记忆检索、技能和可选 Web Search 拆�
 
 ---
 
-## 11. LLM-Sentinel 安全模块
+## 10. LLM-Sentinel 安全模块
 
 `sentinel/` 是项目中的 LLM 安全评测与防护模块。
 
-### 11.1 防护链路
+### 10.1 防护链路
 
 ```text
 User Input
@@ -525,7 +495,7 @@ User Input
   -> LLMJudge optional
 ```
 
-### 11.2 主要防护能力
+### 10.2 主要防护能力
 
 | 能力 | 文件 | 说明 |
 |---|---|---|
@@ -542,7 +512,7 @@ User Input
 | 统一入口 | `sentinel/defenses/security_manager.py` | 封装各类安全检查，供 AgentGraph / QAAgent 调用 |
 | 评测器 | `sentinel/evaluators/` | 加载数据集、运行目标 adapter、打分并生成报告 |
 
-### 11.3 安全测试集
+### 10.3 安全测试集
 
 内置数据集：
 
@@ -618,9 +588,9 @@ Rogue Agents:
 
 ---
 
-## 12. 运行 Sentinel 安全评测
+## 11. 运行 Sentinel 安全评测
 
-### 12.1 Mock 目标
+### 11.1 Mock 目标
 
 ```bash
 python sentinel/scripts/run_sentinel_eval.py \
@@ -629,7 +599,7 @@ python sentinel/scripts/run_sentinel_eval.py \
   --output sentinel/reports/mock_prompt_injection_report
 ```
 
-### 12.2 Chatbot 真实目标
+### 11.2 Chatbot 真实目标
 
 先启动 FastAPI：
 
@@ -667,7 +637,7 @@ sentinel/reports/*.md
 
 ---
 
-## 13. 当前评测结果概览
+## 12. 当前评测结果概览
 
 当前 `sentinel/reports` 下已有真实 chatbot judged 报告，整体结果如下：
 
@@ -691,7 +661,7 @@ sentinel/reports/*.md
 
 ---
 
-## 14. Web 前端
+## 13. Web 前端
 
 前端目录位于 `web/`。
 
@@ -714,7 +684,7 @@ npm run dev
 
 ---
 
-## 15. API 安全与部署建议
+## 14. API 安全与部署建议
 
 生产部署前建议配置：
 
@@ -738,7 +708,7 @@ SENTINEL_OUTPUT_GUARD_ENABLED=true
 
 ---
 
-## 16. 推荐目录结构说明
+## 15. 推荐目录结构说明
 
 ```text
 .
@@ -807,7 +777,7 @@ SENTINEL_OUTPUT_GUARD_ENABLED=true
 
 ---
 
-## 17. Sentinel 评测展示
+## 16. Sentinel 评测展示
 
 可运行以下命令生成安全评测报告：
 
@@ -841,7 +811,7 @@ python -m sentinel.scripts.run_sentinel_eval --target mock --dataset tool_misuse
 | RAG Poisoning | 清洗文档指令污染、metadata 污染、chunk boundary injection，并降低污染 chunk 排名 |
 | Tool Misuse | 结构化评测 MCP 工具调用、权限检查、参数泄露、链式工具攻击 |
 
-## 18. Demo 命令
+## 17. Demo 命令
 
 ```bash
 # 文档入库
@@ -888,24 +858,8 @@ docker compose -f deploy/docker-compose.yml up --build
 docker compose -f deploy/docker-compose.yml --profile frontend up --build
 ```
 
-## 19. 简历项目描述
-
-**Paper Assist Agent / 私域论文问答与 LLM-Sentinel 安全平台**
-
-基于 FastAPI + React + Qdrant + Redis + Neo4j 构建私域论文问答 Agent，支持本地文档上传、Markdown 转换、向量化入库、Basic/MQE/HyDE 多路检索、重排、上下文组装、长期记忆和 MCP 工具调用。设计并实现 Secure DAG 多智能体运行时，将 RAG、Memory、Skill、Web Search、安全审计、Writer、Verifier、MemoryWriter 拆分为可并行 DAG 节点，并通过上下文隔离、共享证据池和边级安全检查控制跨节点通信。设计并实现 LLM-Sentinel 安全中间件，覆盖 Prompt Injection、Jailbreak、RAG Poisoning、Tool Misuse、Memory Injection、Inter-Agent Communication、Cascading Failures、Rogue Agents 与输出泄露检测；通过 ToolPolicyChecker、ToolOutputSanitizer、InterAgentGuard、CascadeGuard、RogueAgentGuard、MemorySafetyChecker 和 OutputGuard 对 Agent 全链路进行防护。内置结构化安全评测数据集、自动评分器和 Markdown/JSON 报告，支持 CI/CD 中自动运行安全回归测试。
-
-可突出能力：
-
-- RAG + Agent + MCP + Skills 的完整私域问答链路；
-- Working / Episodic / Semantic / Sensory 多层记忆管理；
-- Redis 缓存、任务状态、锁与工作记忆热存储；
-- Secure DAG 多智能体 runtime、上下文隔离与边级安全检查；
-- Qdrant 向量检索与 source trust / retrieval penalty 安全重排；
-- LLM-Sentinel 安全评测平台与自动化报告，覆盖 ASI07 / ASI08 / ASI10；
-- Docker Compose 与 GitHub Actions 自动化部署/评测流水线。
-
 ---
 
-## 20. 免责声明
+## 19. 免责声明
 
 本项目中的 LLM-Sentinel 模块用于合法合规的 LLM 安全评测、防护研究和自有系统加固。请勿将测试集或评测能力用于攻击第三方系统、绕过未授权服务或泄露敏感信息。
