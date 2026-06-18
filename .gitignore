@@ -29,3 +29,8 @@ build/
 .DS_Store
 
 *.db
+
+*.png
+*.jpg
+*.jpeg
+*.gif
